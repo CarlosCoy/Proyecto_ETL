@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Datos sensibles
+Datos/
+*.xlsx
+*.xlsm
+*.xls
+
+# Resultados de la ETL
+CSV/
+
+# Archivos temporales de Excel
+~$*
+
+# VS Code
+.vscode/
