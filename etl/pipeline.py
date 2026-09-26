@@ -19,10 +19,13 @@ def run_etl(
     keep_formulas: bool,
     min_header_cells: int,
     max_scan_rows: int,
-    max_scan_cols: int
+    max_scan_cols: int,
+    sheets_to_process: set[str],
 ) -> Path:
     """
-    Ejecuta la ETL completa: un CSV por hoja más el reporte.
+    Ejecuta la ETL únicamente sobre las hojas configuradas.
+
+    Genera un CSV por cada hoja procesada más el reporte.
 
     Retorna la ruta del reporte generado.
     """
@@ -31,6 +34,12 @@ def run_etl(
         input_path,
         keep_formulas
     )
+
+    # Normalizar nombres de hojas configuradas
+    sheets_to_process = {
+        sheet.strip().upper()
+        for sheet in sheets_to_process
+    }
 
     output_path.mkdir(
         parents=True,
@@ -48,10 +57,24 @@ def run_etl(
     )
 
     print(
-        f"Hojas:        {len(wb.worksheets)}\n"
+        f"Hojas Excel:  {len(wb.worksheets)}"
+    )
+
+    print(
+        f"Hojas filtro: {', '.join(sorted(sheets_to_process))}\n"
     )
 
     for ws in wb.worksheets:
+
+        # -------------------------------------------------------------------
+        # Filtro de hojas
+        # -------------------------------------------------------------------
+
+        if ws.title.strip().upper() not in sheets_to_process:
+            print(
+                f"[SKIP] {ws.title}: hoja fuera del filtro."
+            )
+            continue
 
         table = table_name(
             ws.title
