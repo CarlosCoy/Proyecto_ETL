@@ -114,37 +114,66 @@ La ETL utiliza:
 
 - `pandas`: procesamiento de datos.
 - `openpyxl`: lectura de archivos Excel `.xlsx` y `.xlsm`.
+- `numpy`: soporte para valores nulos y cálculos de la detección de tablas.
 
 Instalar:
 
 ```powershell
-pip install pandas openpyxl
+pip install -r requirements.txt
 ```
 
 También se puede actualizar `pip` antes de instalar:
 
 ```powershell
 python -m pip install --upgrade pip
-pip install pandas openpyxl
+pip install -r requirements.txt
 ```
 
 ---
 
 # 5. Estructura del proyecto
 
-Una estructura recomendada es:
+El código está organizado por etapas de la ETL (extracción, transformación y carga):
+
+```text
+Proyecto_ETL/
+│
+├── main.py                        # Punto de entrada (argumentos de línea de comandos)
+├── requirements.txt
+│
+├── config/
+│   └── settings.py                # Rutas por defecto y parámetros de detección
+│
+└── etl/
+    ├── pipeline.py                # Orquesta Extract → Transform → Load por hoja
+    │
+    ├── extract/                   # E: lectura del Excel
+    │   ├── workbook.py            # Validación y apertura del archivo
+    │   ├── sheet_reader.py        # Elige la tabla principal de cada hoja
+    │   ├── structured_tables.py   # Tablas estructuradas de Excel
+    │   └── table_detection.py     # Detección heurística de encabezado y bloque
+    │
+    ├── transform/                 # T: limpieza
+    │   ├── cleaning.py            # Espacios, vacíos → nulos, filas vacías
+    │   └── naming.py              # Normalización de nombres de columnas y tablas
+    │
+    ├── load/                      # L: escritura de resultados
+    │   ├── csv_writer.py          # Exportación a CSV
+    │   └── report.py              # _etl_report.csv
+    │
+    └── utils/
+        └── cells.py               # Utilidades de celdas (is_empty)
+```
+
+Para la futura carga a SQL basta con agregar un nuevo módulo en `etl/load/` (por ejemplo `sql_writer.py`) y usarlo desde `pipeline.py`, sin tocar la extracción ni la limpieza.
+
+Los datos de entrada y salida pueden estar fuera del proyecto, por ejemplo:
 
 ```text
 Proyecto/
-│
-├── etl_excel_to_csv.py
-│
 ├── Datos/
 │   └── Copia de S38_HORARIO_PROD_P1_2026 .xlsm
-│
-├── CSV/
-│
-└── .venv/
+└── CSV/
 ```
 
 La carpeta `CSV` puede estar vacía inicialmente. La ETL generará los archivos allí.
@@ -158,7 +187,7 @@ La ruta del archivo Excel es **paramétrica**.
 La ejecución recomendada en PowerShell es:
 
 ```powershell
-python etl_excel_to_csv.py `
+python main.py `
     --input "D:\Maestria\Semestre I\ETL\Proyecto\Datos\Copia de S38_HORARIO_PROD_P1_2026 .xlsm" `
     --output "D:\Maestria\Semestre I\ETL\Proyecto\CSV"
 ```
@@ -168,7 +197,7 @@ El carácter `` ` `` al final de cada línea permite continuar el comando en la 
 También puede ejecutarse en una sola línea:
 
 ```powershell
-python etl_excel_to_csv.py --input "D:\Maestria\Semestre I\ETL\Proyecto\Datos\Copia de S38_HORARIO_PROD_P1_2026 .xlsm" --output "D:\Maestria\Semestre I\ETL\Proyecto\CSV"
+python main.py --input "D:\Maestria\Semestre I\ETL\Proyecto\Datos\Copia de S38_HORARIO_PROD_P1_2026 .xlsm" --output "D:\Maestria\Semestre I\ETL\Proyecto\CSV"
 ```
 
 ---
@@ -179,7 +208,7 @@ python etl_excel_to_csv.py --input "D:\Maestria\Semestre I\ETL\Proyecto\Datos\Co
 
 Ruta del archivo Excel de entrada.
 
-Es obligatorio.
+Es opcional. Si no se especifica, utiliza `Config.INPUT_FILE` de `config/settings.py`.
 
 Ejemplo:
 
@@ -200,11 +229,7 @@ Carpeta donde se generarán los CSV.
 
 Es opcional.
 
-Si no se especifica, utiliza:
-
-```text
-output_csv/
-```
+Si no se especifica, utiliza `Config.OUTPUT_DIR` de `config/settings.py`.
 
 Ejemplo:
 
@@ -221,7 +246,7 @@ Por defecto, la ETL utiliza el valor almacenado/calculado de las fórmulas de Ex
 Si se desea conservar las fórmulas como texto, se puede ejecutar:
 
 ```powershell
-python etl_excel_to_csv.py `
+python main.py `
     --input "D:\Datos\archivo.xlsm" `
     --output "D:\Datos\CSV" `
     --keep-formulas
@@ -429,7 +454,7 @@ El flujo completo de esta primera versión es:
                       │
                       │ --input
                       ▼
-             etl_excel_to_csv.py
+             main.py
                       │
           ┌───────────┴───────────┐
           │                       │
@@ -523,7 +548,7 @@ cd "D:\Maestria\Semestre I\ETL\Proyecto"
 
 .\.venv\Scripts\Activate.ps1
 
-python etl_excel_to_csv.py `
+python main.py `
     --input "D:\Maestria\Semestre I\ETL\Proyecto\Datos\Copia de S38_HORARIO_PROD_P1_2026 .xlsm" `
     --output "D:\Maestria\Semestre I\ETL\Proyecto\CSV"
 ```

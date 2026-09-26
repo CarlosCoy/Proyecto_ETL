@@ -1,180 +1,18 @@
 # ---------------------------------------------------------------------------
-# Utilidades
+# Extract: detección automática de tablas
 # ---------------------------------------------------------------------------
+#
+# Se usa cuando la hoja no tiene una tabla estructurada de Excel.
+# Busca la fila con más probabilidad de ser encabezado y delimita
+# el bloque de datos que hay debajo.
 
 import math
 import re
-from typing import Iterable
 
 import numpy as np
 import pandas as pd
 
-from openpyxl.utils.cell import range_boundaries
-
-
-def is_empty(value) -> bool:
-    """Determina si una celda debe considerarse vacía."""
-    if value is None:
-        return True
-
-    if isinstance(value, str):
-        return value.strip() == ""
-
-    try:
-        return bool(pd.isna(value))
-    except (TypeError, ValueError):
-        return False
-
-
-def normalize_name(value: object, fallback: str) -> str:
-    """
-    Convierte un nombre de columna/tabla a un identificador estable.
-
-    Ejemplo:
-        'Fecha Nacimiento' -> 'fecha_nacimiento'
-    """
-    if is_empty(value):
-        text = fallback
-    else:
-        text = str(value).strip()
-
-    # Quitar acentos.
-    replacements = str.maketrans(
-        "áéíóúüñÁÉÍÓÚÜÑ",
-        "aeiouunAEIOUUN",
-    )
-
-    text = text.translate(replacements)
-
-    text = text.lower()
-
-    text = re.sub(r"[^a-zA-Z0-9_]+", "_", text)
-    text = re.sub(r"_+", "_", text).strip("_")
-
-    if not text:
-        text = fallback
-
-    if text[0].isdigit():
-        text = f"col_{text}"
-
-    return text
-
-
-def unique_names(
-    names: Iterable[object],
-    prefix: str = "columna"
-) -> list[str]:
-    """Normaliza encabezados y evita duplicados."""
-
-    result = []
-    used = {}
-
-    for index, name in enumerate(names, start=1):
-
-        base = normalize_name(
-            name,
-            f"{prefix}_{index}"
-        )
-
-        count = used.get(base, 0) + 1
-        used[base] = count
-
-        result.append(
-            base if count == 1 else f"{base}_{count}"
-        )
-
-    return result
-
-
-def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    """Limpia encabezados, espacios y representa vacíos como NaN."""
-
-    df = df.copy()
-
-    df.columns = unique_names(df.columns)
-
-    # Cadenas vacías/espacios -> NaN
-    for column in df.columns:
-
-        if pd.api.types.is_object_dtype(df[column]):
-
-            df[column] = df[column].map(
-                lambda x:
-                    np.nan
-                    if isinstance(x, str) and x.strip() == ""
-                    else (
-                        x.strip()
-                        if isinstance(x, str)
-                        else x
-                    )
-            )
-
-    # Eliminar filas completamente vacías.
-    df = df.dropna(
-        axis=0,
-        how="all"
-    )
-
-    # Las columnas completamente vacías NO se eliminan.
-    # Forman parte de la estructura de la futura tabla SQL.
-
-    return df.reset_index(drop=True)
-
-
-def excel_table_range(
-    ws,
-    table_name: str
-) -> tuple[int, int, int, int]:
-    """Devuelve los límites de una tabla estructurada de Excel."""
-
-    table = ws.tables[table_name]
-
-    return range_boundaries(table.ref)
-
-
-def get_structured_tables(ws):
-    """Obtiene las tablas estructuradas de una hoja."""
-
-    return list(ws.tables.values())
-
-
-def dataframe_from_excel_table(
-    ws,
-    table
-) -> pd.DataFrame:
-    """
-    Lee exactamente el rango de una tabla estructurada.
-
-    La primera fila del rango se considera encabezado.
-    """
-
-    min_col, min_row, max_col, max_row = (
-        range_boundaries(table.ref)
-    )
-
-    rows = []
-
-    for row in ws.iter_rows(
-        min_row=min_row,
-        max_row=max_row,
-        min_col=min_col,
-        max_col=max_col,
-        values_only=True,
-    ):
-        rows.append(list(row))
-
-    if not rows:
-        return pd.DataFrame()
-
-    header = rows[0]
-    data = rows[1:]
-
-    df = pd.DataFrame(
-        data,
-        columns=header
-    )
-
-    return clean_dataframe(df)
+from etl.utils.cells import is_empty
 
 
 def row_values(
@@ -492,7 +330,7 @@ def dataframe_from_detected_block(
     ws,
     block
 ) -> pd.DataFrame:
-    """Construye un DataFrame desde un bloque detectado."""
+    """Construye un DataFrame (sin limpiar) desde un bloque detectado."""
 
     (
         header_row,
@@ -518,102 +356,7 @@ def dataframe_from_detected_block(
     header = rows[0]
     data = rows[1:]
 
-    return clean_dataframe(
-        pd.DataFrame(
-            data,
-            columns=header
-        )
-    )
-
-
-def table_name(sheet_name: str) -> str:
-    """Genera el nombre de tabla a partir del nombre de la hoja."""
-
-    return normalize_name(
-        sheet_name,
-        "tabla"
-    )
-
-
-def process_sheet(
-    ws,
-    min_header_cells: int,
-    max_scan_rows: int,
-    max_scan_cols: int
-) -> tuple[pd.DataFrame, str, str]:
-    """
-    Procesa una hoja.
-
-    Prioridad:
-
-    1. Tabla estructurada de Excel.
-    2. Detección automática de bloque.
-    """
-
-    structured_tables = get_structured_tables(ws)
-
-    if structured_tables:
-
-        # Si hay varias tablas estructuradas,
-        # se toma la de mayor superficie.
-        table = max(
-            structured_tables,
-            key=lambda t: (
-                range_boundaries(t.ref)[2]
-                - range_boundaries(t.ref)[0]
-                + 1
-            )
-            *
-            (
-                range_boundaries(t.ref)[3]
-                - range_boundaries(t.ref)[1]
-                + 1
-            ),
-        )
-
-        df = dataframe_from_excel_table(
-            ws,
-            table
-        )
-
-        source = (
-            f"tabla_excel:{table.name}"
-        )
-
-        return (
-            df,
-            source,
-            table.ref
-        )
-
-    block = detect_table_block(
-        ws,
-        max_scan_rows,
-        max_scan_cols,
-        min_header_cells
-    )
-
-    if block is None:
-        return (
-            pd.DataFrame(),
-            "no_detectada",
-            ""
-        )
-
-    df = dataframe_from_detected_block(
-        ws,
-        block
-    )
-
-    source = "deteccion_automatica"
-
-    ref = (
-        f"{ws.cell(block[0], block[1]).coordinate}:"
-        f"{ws.cell(block[3], block[2]).coordinate}"
-    )
-
-    return (
-        df,
-        source,
-        ref
+    return pd.DataFrame(
+        data,
+        columns=header
     )
