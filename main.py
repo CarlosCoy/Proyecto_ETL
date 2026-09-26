@@ -47,6 +47,7 @@ def main():
         min_header_cells=Config.MIN_HEADER_CELLS,
         max_scan_rows=Config.MAX_SCAN_ROWS,
         max_scan_cols=Config.MAX_SCAN_COLS,
+        sheets_to_process=Config.SHEETS_TO_PROCESS,
     )
 
 
