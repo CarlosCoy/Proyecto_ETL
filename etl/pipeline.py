@@ -12,10 +12,14 @@ from config import Config
 
 from etl.extract.sheet_reader import extract_sheet
 from etl.extract.workbook import open_workbook
+
 from etl.load.csv_writer import write_csv
 from etl.load.report import report_row, write_report
+from etl.load.sql_writer import write_sql
+
 from etl.transform.cleaning import clean_dataframe
 from etl.transform.naming import table_name
+from etl.transform.sql_transform import transform_for_sql
 
 
 def run_etl(
@@ -29,6 +33,22 @@ def run_etl(
 ) -> Path:
     """
     Ejecuta la ETL únicamente sobre las hojas configuradas.
+
+    Flujo:
+
+        Excel
+          ↓
+        Extract
+          ↓
+        Cleaning
+          ↓
+        Transformación SQL
+          ↓
+        CSV
+          ↓
+        PostgreSQL
+          ↓
+        UPSERT
 
     Genera un CSV por cada hoja procesada más el reporte.
 
@@ -54,10 +74,12 @@ def run_etl(
                 Config.DB_USER,
                 password,
             ],
-            Config.DB_JAR,
+            [str(Config.DB_JAR)],
         )
 
-        print("Conexión a base de datos establecida.\n")
+        print(
+            "Conexión a base de datos establecida.\n"
+        )
 
     except Exception as exc:
 
@@ -77,11 +99,18 @@ def run_etl(
         keep_formulas
     )
 
+    # -----------------------------------------------------------------------
     # Normalizar nombres de hojas configuradas
+    # -----------------------------------------------------------------------
+
     sheets_to_process = {
         sheet.strip().upper()
         for sheet in sheets_to_process
     }
+
+    # -----------------------------------------------------------------------
+    # Crear directorio de salida
+    # -----------------------------------------------------------------------
 
     output_path.mkdir(
         parents=True,
@@ -89,6 +118,10 @@ def run_etl(
     )
 
     report = []
+
+    # -----------------------------------------------------------------------
+    # Información inicial
+    # -----------------------------------------------------------------------
 
     print(
         f"\nExcel origen: {input_path}"
@@ -108,6 +141,10 @@ def run_etl(
 
     try:
 
+        # ===================================================================
+        # Procesamiento de hojas
+        # ===================================================================
+
         for ws in wb.worksheets:
 
             # ---------------------------------------------------------------
@@ -122,15 +159,19 @@ def run_etl(
 
                 continue
 
+            # ---------------------------------------------------------------
+            # Nombre de tabla
+            # ---------------------------------------------------------------
+
             table = table_name(
                 ws.title
             )
 
             try:
 
-                # -----------------------------------------------------------
-                # Extract
-                # -----------------------------------------------------------
+                # ===========================================================
+                # EXTRACT
+                # ===========================================================
 
                 raw_df, source, detected_range = extract_sheet(
                     ws,
@@ -139,29 +180,48 @@ def run_etl(
                     max_scan_cols
                 )
 
-                # -----------------------------------------------------------
-                # Transform
-                # -----------------------------------------------------------
+                # ===========================================================
+                # TRANSFORM - Limpieza genérica
+                # ===========================================================
 
                 df = clean_dataframe(
                     raw_df
                 )
+
+                # ===========================================================
+                # TRANSFORM - Adaptación al modelo SQL
+                # ===========================================================
+
+                df = transform_for_sql(
+                    df,
+                    table
+                )
+
+                # -----------------------------------------------------------
+                # Archivo CSV
+                # -----------------------------------------------------------
 
                 output_file = (
                     output_path /
                     f"{table}.csv"
                 )
 
+                # -----------------------------------------------------------
+                # Validar si quedaron datos
+                # -----------------------------------------------------------
+
                 if df.empty:
 
-                    report.append(report_row(
-                        hoja=ws.title,
-                        tabla=table,
-                        fuente=source,
-                        rango=detected_range,
-                        estado="SIN_DATOS",
-                        archivo=output_file.name,
-                    ))
+                    report.append(
+                        report_row(
+                            hoja=ws.title,
+                            tabla=table,
+                            fuente=source,
+                            rango=detected_range,
+                            estado="SIN_DATOS",
+                            archivo=output_file.name,
+                        )
+                    )
 
                     print(
                         f"[WARN] {ws.title}: "
@@ -170,25 +230,50 @@ def run_etl(
 
                     continue
 
-                # -----------------------------------------------------------
-                # Load
-                # -----------------------------------------------------------
+                # ===========================================================
+                # LOAD - CSV
+                # ===========================================================
 
                 write_csv(
                     df,
                     output_file
                 )
 
-                report.append(report_row(
-                    hoja=ws.title,
-                    tabla=table,
-                    fuente=source,
-                    rango=detected_range,
-                    filas=len(df),
-                    columnas=len(df.columns),
-                    estado="OK",
-                    archivo=output_file.name,
-                ))
+                print(
+                    f"[OK]   CSV generado: {output_file.name}"
+                )
+
+                # ===========================================================
+                # LOAD - PostgreSQL
+                # ===========================================================
+
+                rows_processed = write_sql(
+                    connection,
+                    df,
+                    table
+                )
+
+                print(
+                    f"[OK]   SQL cargado:   "
+                    f"{rows_processed} filas → {table}"
+                )
+
+                # -----------------------------------------------------------
+                # Reporte
+                # -----------------------------------------------------------
+
+                report.append(
+                    report_row(
+                        hoja=ws.title,
+                        tabla=table,
+                        fuente=source,
+                        rango=detected_range,
+                        filas=len(df),
+                        columnas=len(df.columns),
+                        estado="OK",
+                        archivo=output_file.name,
+                    )
+                )
 
                 print(
                     f"[OK]   {ws.title:<25} "
@@ -200,11 +285,13 @@ def run_etl(
 
             except Exception as exc:
 
-                report.append(report_row(
-                    hoja=ws.title,
-                    tabla=table,
-                    estado=f"ERROR: {exc}",
-                ))
+                report.append(
+                    report_row(
+                        hoja=ws.title,
+                        tabla=table,
+                        estado=f"ERROR: {exc}",
+                    )
+                )
 
                 print(
                     f"[ERROR] {ws.title}: {exc}",

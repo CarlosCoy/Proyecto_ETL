@@ -2,6 +2,8 @@
 # Configuración de la ETL
 # ---------------------------------------------------------------------------
 
+from pathlib import Path
+
 class Config:
 
     # -----------------------------------------------------------------------
@@ -10,7 +12,7 @@ class Config:
 
     INPUT_FILE = (
         r"D:\Maestria\Semestre I\ETL\Proyecto\Datos"
-        r"\Copia de S38_HORARIO_PROD_P1_2026 .xlsm"
+        r"\Copia de S38_HORARIO_PROD_P1_2026.xlsm"
     )
 
     OUTPUT_DIR = (
@@ -61,6 +63,7 @@ class Config:
     )
 
     DB_JAR = (
-        r"D:\Maestria\Semestre I\ETL\Proyecto\Proyecto_ETL"
-        r"\lib\postgresql-42.7.13.jar"
+        Path(__file__).resolve().parent
+        / "lib"
+        / "postgresql-42.7.13.jar"
     )
