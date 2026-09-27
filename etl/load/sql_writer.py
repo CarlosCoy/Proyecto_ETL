@@ -10,10 +10,10 @@ from etl.load.sql_tables import SQL_TABLES
 
 
 PRIMARY_KEYS = {
-    "actdb": "codigo_empleado",
-    "vac": "codigo_empleado",
-    "polivalencia": "codigo_empleado",
-    "calendario": "fecha",
+    "actdb": ["codigo_empleado"],
+    "vac": ["codigo_empleado", "inicio_salida"],
+    "polivalencia": ["codigo_empleado"],
+    "calendario": ["fecha"],
 }
 
 
@@ -117,12 +117,18 @@ def insert_dataframe(
             f"No existe definición de clave primaria para: {table_name}"
         )
 
-    primary_key = PRIMARY_KEYS[table_name]
+    primary_keys = PRIMARY_KEYS[table_name]
 
-    if primary_key not in df.columns:
+    missing_keys = [
+        key
+        for key in primary_keys
+        if key not in df.columns
+    ]
+
+    if missing_keys:
         raise ValueError(
-            f"La tabla '{table_name}' requiere la columna "
-            f"'{primary_key}' como clave primaria."
+            f"La tabla '{table_name}' requiere las columnas "
+            f"de clave primaria: {', '.join(missing_keys)}"
         )
 
     columns = list(df.columns)
@@ -140,23 +146,36 @@ def insert_dataframe(
     update_columns = [
         column
         for column in columns
-        if column != primary_key
+        if column not in primary_keys
     ]
 
     if update_columns:
+
         update_clause = ", ".join(
             f"{quote_identifier(column)} = "
             f"EXCLUDED.{quote_identifier(column)}"
             for column in update_columns
         )
 
+        conflict_columns = ", ".join(
+            quote_identifier(key)
+            for key in primary_keys
+        )
+
         conflict_clause = (
-            f"ON CONFLICT ({quote_identifier(primary_key)}) "
+            f"ON CONFLICT ({conflict_columns}) "
             f"DO UPDATE SET {update_clause}"
         )
+
     else:
+
+        conflict_columns = ", ".join(
+            quote_identifier(key)
+            for key in primary_keys
+        )
+
         conflict_clause = (
-            f"ON CONFLICT ({quote_identifier(primary_key)}) "
+            f"ON CONFLICT ({conflict_columns}) "
             f"DO NOTHING"
         )
 
@@ -172,10 +191,12 @@ def insert_dataframe(
     rows_processed = 0
 
     try:
+
         for row in df.itertuples(
             index=False,
             name=None,
         ):
+
             values = tuple(
                 python_value(value)
                 for value in row
@@ -189,6 +210,7 @@ def insert_dataframe(
             rows_processed += 1
 
     finally:
+
         cursor.close()
 
     return rows_processed

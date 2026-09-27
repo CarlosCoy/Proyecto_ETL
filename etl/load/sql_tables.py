@@ -28,26 +28,31 @@ SQL_TABLES = {
     # -----------------------------------------------------------------------
 
     "vac": """
-        CREATE TABLE IF NOT EXISTS vac (
-            codigo_empleado INTEGER PRIMARY KEY,
-            nombre VARCHAR(150),
-            maquina VARCHAR(100),
-            mes INTEGER,
-            fecha_ingreso DATE,
-            turno_actual INTEGER,
-            vacaciones_dic VARCHAR(20),
-            tipo VARCHAR(50),
-            inicio_salida DATE,
-            dias_a_tomar INTEGER,
-            fin DATE,
-            llegada DATE,
-            observaciones VARCHAR(255),
-            mes_de_salida INTEGER,
-            estado VARCHAR(50),
-            fecha DATE,
-            dias DECIMAL(10,2)
-        );
-    """,
+    CREATE TABLE IF NOT EXISTS vac (
+        codigo_empleado INTEGER NOT NULL,
+        nombre VARCHAR(150),
+        maquina VARCHAR(100),
+        mes INTEGER,
+        fecha_ingreso DATE,
+        turno_actual INTEGER,
+        vacaciones_dic VARCHAR(20),
+        tipo VARCHAR(50),
+        inicio_salida DATE NOT NULL,
+        dias_a_tomar INTEGER,
+        fin DATE,
+        llegada DATE,
+        observaciones VARCHAR(255),
+        mes_de_salida INTEGER,
+        estado VARCHAR(50),
+        fecha DATE,
+        dias DECIMAL(10,2),
+
+        PRIMARY KEY (codigo_empleado, inicio_salida),
+
+        FOREIGN KEY (codigo_empleado)
+            REFERENCES actdb(codigo_empleado)
+    );
+""",
 
     # -----------------------------------------------------------------------
     # POLIVALENCIA
