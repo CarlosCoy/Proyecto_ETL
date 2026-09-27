@@ -3,7 +3,12 @@
 # ---------------------------------------------------------------------------
 
 import sys
+from getpass import getpass
 from pathlib import Path
+
+import jaydebeapi
+
+from config import Config
 
 from etl.extract.sheet_reader import extract_sheet
 from etl.extract.workbook import open_workbook
@@ -29,6 +34,43 @@ def run_etl(
 
     Retorna la ruta del reporte generado.
     """
+
+    # -----------------------------------------------------------------------
+    # Conexión a base de datos
+    # -----------------------------------------------------------------------
+
+    password = getpass(
+        "Ingrese la contraseña de la base de datos: "
+    )
+
+    print("\nConectando a la base de datos...")
+
+    try:
+
+        connection = jaydebeapi.connect(
+            Config.DB_DRIVER,
+            Config.DB_URL,
+            [
+                Config.DB_USER,
+                password,
+            ],
+            Config.DB_JAR,
+        )
+
+        print("Conexión a base de datos establecida.\n")
+
+    except Exception as exc:
+
+        print(
+            f"[ERROR] No fue posible conectar a la base de datos: {exc}",
+            file=sys.stderr
+        )
+
+        raise
+
+    # -----------------------------------------------------------------------
+    # Abrir workbook
+    # -----------------------------------------------------------------------
 
     wb = open_workbook(
         input_path,
@@ -64,106 +106,122 @@ def run_etl(
         f"Hojas filtro: {', '.join(sorted(sheets_to_process))}\n"
     )
 
-    for ws in wb.worksheets:
+    try:
 
-        # -------------------------------------------------------------------
-        # Filtro de hojas
-        # -------------------------------------------------------------------
-
-        if ws.title.strip().upper() not in sheets_to_process:
-            print(
-                f"[SKIP] {ws.title}: hoja fuera del filtro."
-            )
-            continue
-
-        table = table_name(
-            ws.title
-        )
-
-        try:
+        for ws in wb.worksheets:
 
             # ---------------------------------------------------------------
-            # Extract
+            # Filtro de hojas
             # ---------------------------------------------------------------
 
-            raw_df, source, detected_range = extract_sheet(
-                ws,
-                min_header_cells,
-                max_scan_rows,
-                max_scan_cols
+            if ws.title.strip().upper() not in sheets_to_process:
+
+                print(
+                    f"[SKIP] {ws.title}: hoja fuera del filtro."
+                )
+
+                continue
+
+            table = table_name(
+                ws.title
             )
 
-            # ---------------------------------------------------------------
-            # Transform
-            # ---------------------------------------------------------------
+            try:
 
-            df = clean_dataframe(
-                raw_df
-            )
+                # -----------------------------------------------------------
+                # Extract
+                # -----------------------------------------------------------
 
-            output_file = (
-                output_path /
-                f"{table}.csv"
-            )
+                raw_df, source, detected_range = extract_sheet(
+                    ws,
+                    min_header_cells,
+                    max_scan_rows,
+                    max_scan_cols
+                )
 
-            if df.empty:
+                # -----------------------------------------------------------
+                # Transform
+                # -----------------------------------------------------------
+
+                df = clean_dataframe(
+                    raw_df
+                )
+
+                output_file = (
+                    output_path /
+                    f"{table}.csv"
+                )
+
+                if df.empty:
+
+                    report.append(report_row(
+                        hoja=ws.title,
+                        tabla=table,
+                        fuente=source,
+                        rango=detected_range,
+                        estado="SIN_DATOS",
+                        archivo=output_file.name,
+                    ))
+
+                    print(
+                        f"[WARN] {ws.title}: "
+                        "no se detectaron datos."
+                    )
+
+                    continue
+
+                # -----------------------------------------------------------
+                # Load
+                # -----------------------------------------------------------
+
+                write_csv(
+                    df,
+                    output_file
+                )
 
                 report.append(report_row(
                     hoja=ws.title,
                     tabla=table,
                     fuente=source,
                     rango=detected_range,
-                    estado="SIN_DATOS",
+                    filas=len(df),
+                    columnas=len(df.columns),
+                    estado="OK",
                     archivo=output_file.name,
                 ))
 
                 print(
-                    f"[WARN] {ws.title}: "
-                    "no se detectaron datos."
+                    f"[OK]   {ws.title:<25} "
+                    f"{len(df):>6} filas x "
+                    f"{len(df.columns):>3} columnas "
+                    f"| {source:<24} "
+                    f"| {detected_range}"
                 )
 
-                continue
+            except Exception as exc:
 
-            # ---------------------------------------------------------------
-            # Load
-            # ---------------------------------------------------------------
+                report.append(report_row(
+                    hoja=ws.title,
+                    tabla=table,
+                    estado=f"ERROR: {exc}",
+                ))
 
-            write_csv(
-                df,
-                output_file
-            )
+                print(
+                    f"[ERROR] {ws.title}: {exc}",
+                    file=sys.stderr
+                )
 
-            report.append(report_row(
-                hoja=ws.title,
-                tabla=table,
-                fuente=source,
-                rango=detected_range,
-                filas=len(df),
-                columnas=len(df.columns),
-                estado="OK",
-                archivo=output_file.name,
-            ))
+    finally:
 
-            print(
-                f"[OK]   {ws.title:<25} "
-                f"{len(df):>6} filas x "
-                f"{len(df.columns):>3} columnas "
-                f"| {source:<24} "
-                f"| {detected_range}"
-            )
+        # -------------------------------------------------------------------
+        # Cerrar conexión
+        # -------------------------------------------------------------------
 
-        except Exception as exc:
+        connection.close()
 
-            report.append(report_row(
-                hoja=ws.title,
-                tabla=table,
-                estado=f"ERROR: {exc}",
-            ))
-
-            print(
-                f"[ERROR] {ws.title}: {exc}",
-                file=sys.stderr
-            )
+        print(
+            "\nConexión a base de datos cerrada."
+        )
 
     # -----------------------------------------------------------------------
     # Generar reporte

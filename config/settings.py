@@ -17,7 +17,6 @@ class Config:
         r"D:\Maestria\Semestre I\ETL\Proyecto\CSV"
     )
 
-
     # -----------------------------------------------------------------------
     # Hojas a procesar
     # -----------------------------------------------------------------------
@@ -43,3 +42,25 @@ class Config:
     # -----------------------------------------------------------------------
 
     KEEP_FORMULAS = False
+
+    # -----------------------------------------------------------------------
+    # Base de datos
+    # -----------------------------------------------------------------------
+
+    DB_HOST = "TU_HOST"
+    DB_PORT = 5432
+    DB_NAME = "TU_BASE_DATOS"
+    DB_USER = "TU_USUARIO"
+
+    DB_DRIVER = "org.postgresql.Driver"
+
+    DB_URL = (
+        f"jdbc:postgresql://"
+        f"{DB_HOST}:{DB_PORT}/"
+        f"{DB_NAME}"
+    )
+
+    DB_JAR = (
+        r"D:\Maestria\Semestre I\ETL\Proyecto\Proyecto_ETL"
+        r"\lib\postgresql-42.7.13.jar"
+    )
