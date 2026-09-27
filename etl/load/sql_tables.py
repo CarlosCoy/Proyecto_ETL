@@ -9,7 +9,7 @@ SQL_TABLES = {
     # -----------------------------------------------------------------------
 
     "actdb": """
-        CREATE TABLE actdb (
+        CREATE TABLE IF NOT EXISTS actdb (
             codigo_empleado INTEGER PRIMARY KEY,
             nombre VARCHAR(150),
             telefono VARCHAR(20),
@@ -28,7 +28,7 @@ SQL_TABLES = {
     # -----------------------------------------------------------------------
 
     "vac": """
-        CREATE TABLE vac (
+        CREATE TABLE IF NOT EXISTS vac (
             codigo_empleado INTEGER PRIMARY KEY,
             nombre VARCHAR(150),
             maquina VARCHAR(100),
@@ -54,7 +54,7 @@ SQL_TABLES = {
     # -----------------------------------------------------------------------
 
     "polivalencia": """
-        CREATE TABLE polivalencia (
+        CREATE TABLE IF NOT EXISTS polivalencia (
             codigo_empleado INTEGER PRIMARY KEY,
             planta INTEGER,
             operador VARCHAR(150),
@@ -186,7 +186,7 @@ SQL_TABLES = {
     # -----------------------------------------------------------------------
 
     "calendario": """
-        CREATE TABLE calendario (
+        CREATE TABLE IF NOT EXISTS calendario (
             fecha DATE PRIMARY KEY,
             anio INTEGER NOT NULL,
             mes INTEGER NOT NULL,
