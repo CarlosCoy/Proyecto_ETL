@@ -2,6 +2,8 @@
 # Configuración de la ETL
 # ---------------------------------------------------------------------------
 
+from pathlib import Path
+
 class Config:
 
     # -----------------------------------------------------------------------
@@ -10,13 +12,12 @@ class Config:
 
     INPUT_FILE = (
         r"D:\Maestria\Semestre I\ETL\Proyecto\Datos"
-        r"\Copia de S38_HORARIO_PROD_P1_2026 .xlsm"
+        r"\Copia de S38_HORARIO_PROD_P1_2026.xlsm"
     )
 
     OUTPUT_DIR = (
         r"D:\Maestria\Semestre I\ETL\Proyecto\CSV"
     )
-
 
     # -----------------------------------------------------------------------
     # Hojas a procesar
@@ -43,3 +44,26 @@ class Config:
     # -----------------------------------------------------------------------
 
     KEEP_FORMULAS = False
+
+    # -----------------------------------------------------------------------
+    # Base de datos
+    # -----------------------------------------------------------------------
+
+    DB_HOST = "TU_HOST"
+    DB_PORT = 5432
+    DB_NAME = "TU_BASE_DATOS"
+    DB_USER = "TU_USUARIO"
+
+    DB_DRIVER = "org.postgresql.Driver"
+
+    DB_URL = (
+        f"jdbc:postgresql://"
+        f"{DB_HOST}:{DB_PORT}/"
+        f"{DB_NAME}"
+    )
+
+    DB_JAR = (
+        Path(__file__).resolve().parent
+        / "lib"
+        / "postgresql-42.7.13.jar"
+    )
