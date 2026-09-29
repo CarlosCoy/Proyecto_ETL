@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# Load: escritura de DataFrames en PostgreSQL mediante JDBC
+# Load: escritura de DataFrames en PostgreSQL mediante psycopg
 # ---------------------------------------------------------------------------
 
 from typing import Any
@@ -15,6 +15,15 @@ PRIMARY_KEYS = {
     "polivalencia": ["codigo_empleado"],
     "calendario": ["fecha"],
 }
+
+
+# tabla: (columna, tabla referenciada, columna referenciada)
+FOREIGN_KEYS = {
+    "vac": ("codigo_empleado", "actdb", "codigo_empleado"),
+}
+
+# Orden de carga: una tabla referenciada se carga antes que quien la usa.
+LOAD_ORDER = list(SQL_TABLES)
 
 
 def quote_identifier(identifier: str) -> str:
@@ -37,7 +46,7 @@ def quote_identifier(identifier: str) -> str:
 def python_value(value: Any) -> Any:
     """
     Convierte valores de pandas/numpy a tipos Python compatibles
-    con JDBC/JayDeBeApi.
+    con psycopg.
 
     Los valores vacíos se convierten en None para representar
     SQL NULL.
@@ -139,7 +148,7 @@ def insert_dataframe(
     )
 
     placeholders = ", ".join(
-        "?"
+        "%s"
         for _ in columns
     )
 
@@ -216,19 +225,81 @@ def insert_dataframe(
     return rows_processed
 
 
+def discard_invalid_rows(
+    connection,
+    df: pd.DataFrame,
+    table_name: str,
+) -> tuple[pd.DataFrame, dict[str, int]]:
+    """
+    Separa las filas que la base rechazaría por sus llaves.
+
+    - Sin valor en alguna columna de la clave primaria.
+    - Con una llave foránea que no existe en la tabla referenciada.
+
+    Retorna (filas válidas, {motivo: cantidad descartada}).
+    """
+
+    discarded = {}
+
+    # Si falta una columna de la clave, insert_dataframe() lo reporta.
+    primary_keys = [
+        key
+        for key in PRIMARY_KEYS.get(table_name, [])
+        if key in df.columns
+    ]
+
+    missing_pk = df[primary_keys].isna().any(axis=1)
+
+    if missing_pk.any():
+        discarded["sin clave primaria"] = int(missing_pk.sum())
+        df = df[~missing_pk]
+
+    if table_name in FOREIGN_KEYS:
+
+        column, ref_table, ref_column = FOREIGN_KEYS[table_name]
+
+        cursor = connection.cursor()
+
+        try:
+            cursor.execute(
+                f"SELECT {quote_identifier(ref_column)} "
+                f"FROM {quote_identifier(ref_table)}"
+            )
+            existing = {row[0] for row in cursor.fetchall()}
+        finally:
+            cursor.close()
+
+        missing_fk = (
+            df[column].notna()
+            & ~df[column].isin(existing)
+        )
+
+        if missing_fk.any():
+            discarded[f"sin {column} en {ref_table}"] = int(missing_fk.sum())
+            df = df[~missing_fk]
+
+    return df, discarded
+
+
 def write_sql(
     connection,
     df: pd.DataFrame,
     table_name: str,
-) -> int:
+) -> tuple[int, dict[str, int]]:
     """
     Crea la tabla e inserta o actualiza el DataFrame.
 
-    Retorna el número de filas procesadas.
+    Retorna (filas procesadas, {motivo: filas descartadas}).
     """
 
     create_table(
         connection,
+        table_name,
+    )
+
+    df, discarded = discard_invalid_rows(
+        connection,
+        df,
         table_name,
     )
 
@@ -240,4 +311,4 @@ def write_sql(
 
     connection.commit()
 
-    return rows_processed
+    return rows_processed, discarded

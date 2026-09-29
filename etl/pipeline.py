@@ -6,7 +6,7 @@ import sys
 from getpass import getpass
 from pathlib import Path
 
-import jaydebeapi
+import psycopg
 
 from config import Config
 
@@ -15,7 +15,7 @@ from etl.extract.workbook import open_workbook
 
 from etl.load.csv_writer import write_csv
 from etl.load.report import report_row, write_report
-from etl.load.sql_writer import write_sql
+from etl.load.sql_writer import LOAD_ORDER, write_sql
 
 from etl.transform.cleaning import clean_dataframe
 from etl.transform.naming import table_name
@@ -59,26 +59,43 @@ def run_etl(
     # Conexión a base de datos
     # -----------------------------------------------------------------------
 
-    password = getpass(
-        "Ingrese la contraseña de la base de datos: "
+    password = (
+        Config.DB_PASSWORD
+        or getpass("Ingrese la contraseña de la base de datos: ")
     )
 
     print("\nConectando a la base de datos...")
 
     try:
 
-        connection = jaydebeapi.connect(
-            Config.DB_DRIVER,
-            Config.DB_URL,
-            [
-                Config.DB_USER,
-                password,
-            ],
-            [str(Config.DB_JAR)],
+        connection = psycopg.connect(
+            host=Config.DB_HOST,
+            port=Config.DB_PORT,
+            dbname=Config.DB_NAME,
+            user=Config.DB_USER,
+            password=password,
+            sslmode="require",
+            connect_timeout=15,
         )
 
+        # Las tablas se crean y consultan dentro de DB_SCHEMA.
+        cursor = connection.cursor()
+
+        try:
+            cursor.execute(
+                f'CREATE SCHEMA IF NOT EXISTS "{Config.DB_SCHEMA}"'
+            )
+            cursor.execute(
+                f'SET search_path TO "{Config.DB_SCHEMA}"'
+            )
+        finally:
+            cursor.close()
+
+        connection.commit()
+
         print(
-            "Conexión a base de datos establecida.\n"
+            f"Conexión a base de datos establecida "
+            f"(esquema {Config.DB_SCHEMA}).\n"
         )
 
     except Exception as exc:
@@ -145,7 +162,18 @@ def run_etl(
         # Procesamiento de hojas
         # ===================================================================
 
-        for ws in wb.worksheets:
+        # Las tablas referenciadas (actdb) se cargan antes que las que
+        # dependen de ellas (vac), sin importar el orden de las pestañas.
+        worksheets = sorted(
+            wb.worksheets,
+            key=lambda ws: (
+                LOAD_ORDER.index(table_name(ws.title))
+                if table_name(ws.title) in LOAD_ORDER
+                else len(LOAD_ORDER)
+            ),
+        )
+
+        for ws in worksheets:
 
             # ---------------------------------------------------------------
             # Filtro de hojas
@@ -247,7 +275,7 @@ def run_etl(
                 # LOAD - PostgreSQL
                 # ===========================================================
 
-                rows_processed = write_sql(
+                rows_processed, discarded = write_sql(
                     connection,
                     df,
                     table
@@ -257,6 +285,17 @@ def run_etl(
                     f"[OK]   SQL cargado:   "
                     f"{rows_processed} filas → {table}"
                 )
+
+                discarded_detail = "; ".join(
+                    f"{count} {reason}"
+                    for reason, count in discarded.items()
+                )
+
+                if discarded:
+                    print(
+                        f"[WARN] {ws.title}: filas descartadas: "
+                        f"{discarded_detail}"
+                    )
 
                 # -----------------------------------------------------------
                 # Reporte
@@ -272,6 +311,8 @@ def run_etl(
                         columnas=len(df.columns),
                         estado="OK",
                         archivo=output_file.name,
+                        filas_sql=rows_processed,
+                        descartadas=discarded_detail,
                     )
                 )
 
@@ -284,6 +325,10 @@ def run_etl(
                 )
 
             except Exception as exc:
+
+                # Descarta la transacción fallida para que las demás hojas
+                # puedan seguir cargándose.
+                connection.rollback()
 
                 report.append(
                     report_row(

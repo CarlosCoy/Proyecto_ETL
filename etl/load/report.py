@@ -19,6 +19,8 @@ def report_row(
     columnas: int = 0,
     estado: str = "OK",
     archivo: str = "",
+    filas_sql: int = 0,
+    descartadas: str = "",
 ) -> dict:
     """Construye una fila del reporte para una hoja."""
 
@@ -31,6 +33,8 @@ def report_row(
         "columnas": columnas,
         "estado": estado,
         "archivo": archivo,
+        "filas_sql": filas_sql,
+        "descartadas": descartadas,
     }
 
 

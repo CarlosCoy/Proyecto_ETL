@@ -1,4 +1,4 @@
-# ETL Excel → CSV
+# ETL Excel → CSV / Supabase
 
 ETL desarrollada en Python para extraer información desde un archivo Excel con múltiples pestañas y generar un archivo CSV independiente por cada pestaña.
 
@@ -115,6 +115,9 @@ La ETL utiliza:
 - `pandas`: procesamiento de datos.
 - `openpyxl`: lectura de archivos Excel `.xlsx` y `.xlsm`.
 - `numpy`: soporte para valores nulos y cálculos de la detección de tablas.
+- `psycopg`: conexión y carga a PostgreSQL (Supabase).
+- `python-dotenv`: lectura de credenciales desde `.env`.
+- `sqlalchemy` y `sqlacodegen`: generación y uso de las clases SQLAlchemy de las tablas.
 
 Instalar:
 
@@ -139,13 +142,15 @@ El código está organizado por etapas de la ETL (extracción, transformación y
 Proyecto_ETL/
 │
 ├── main.py                        # Punto de entrada (argumentos de línea de comandos)
+├── generate_models.py             # Genera etl/models.py desde la base
 ├── requirements.txt
 │
 ├── config/
-│   └── settings.py                # Rutas por defecto y parámetros de detección
+│   └── settings.py                # Rutas, hojas a procesar y conexión (desde .env)
 │
 └── etl/
     ├── pipeline.py                # Orquesta Extract → Transform → Load por hoja
+    ├── models.py                  # Clases SQLAlchemy (archivo generado)
     │
     ├── extract/                   # E: lectura del Excel
     │   ├── workbook.py            # Validación y apertura del archivo
@@ -155,17 +160,20 @@ Proyecto_ETL/
     │
     ├── transform/                 # T: limpieza
     │   ├── cleaning.py            # Espacios, vacíos → nulos, filas vacías
-    │   └── naming.py              # Normalización de nombres de columnas y tablas
+    │   ├── naming.py              # Normalización de nombres de columnas y tablas
+    │   └── sql_transform.py       # Adaptación de cada hoja a su tabla SQL (tipos, columnas)
     │
     ├── load/                      # L: escritura de resultados
     │   ├── csv_writer.py          # Exportación a CSV
+    │   ├── sql_tables.py          # CREATE TABLE de cada tabla (llaves y relaciones)
+    │   ├── sql_writer.py          # Carga (UPSERT) a Supabase / PostgreSQL
     │   └── report.py              # _etl_report.csv
     │
     └── utils/
         └── cells.py               # Utilidades de celdas (is_empty)
 ```
 
-Para la futura carga a SQL basta con agregar un nuevo módulo en `etl/load/` (por ejemplo `sql_writer.py`) y usarlo desde `pipeline.py`, sin tocar la extracción ni la limpieza.
+La carga a Supabase se describe en la sección 16.
 
 Los datos de entrada y salida pueden estar fuera del proyecto, por ejemplo:
 
@@ -475,52 +483,102 @@ El flujo completo de esta primera versión es:
 
 ---
 
-# 16. Futuro: carga a SQL
+# 16. Carga a Supabase (PostgreSQL)
 
-Esta versión está diseñada como la primera etapa de la ETL.
-
-Actualmente:
+Además de los CSV, la ETL carga las hojas de interés en **Supabase** (PostgreSQL en la nube), con un modelo relacional:
 
 ```text
 Excel → Python → CSV
+              └→ Supabase (esquema project_etl)
 ```
 
-La siguiente etapa puede implementar:
+## Hojas y tablas
+
+Solo se procesan las hojas definidas en `Config.SHEETS_TO_PROCESS` (`config/settings.py`). El resto se omite (`[SKIP]`).
+
+| Hoja | Tabla | Clave primaria | Relación |
+|---|---|---|---|
+| ActDB | `actdb` | `codigo_empleado` | |
+| VAC | `vac` | `codigo_empleado`, `inicio_salida` | `codigo_empleado` → `actdb` |
+| Polivalencia | `polivalencia` | `codigo_empleado` | |
+| Calendario | `calendario` | `fecha` | |
+
+- `etl/load/sql_tables.py` define cada tabla (`CREATE TABLE IF NOT EXISTS`) con sus tipos, llaves y relaciones.
+- `etl/transform/sql_transform.py` adapta cada hoja a su tabla: renombra columnas, convierte tipos (enteros, fechas, decimales, booleanos) y descarta columnas que no pertenecen al modelo.
+- `etl/load/sql_writer.py` inserta con **UPSERT**: si la clave primaria ya existe, actualiza la fila; si no, la inserta. Ejecutar la ETL varias veces no duplica datos.
+- Las tablas se cargan en orden de dependencias (`actdb` antes que `vac`), sin importar el orden de las pestañas en el Excel.
+
+## Filas descartadas
+
+Antes de insertar, se descartan las filas que la base rechazaría:
+
+- Filas **sin valor en la clave primaria** (por ejemplo, vacaciones sin `inicio_salida`).
+- Filas de `vac` cuyo **`codigo_empleado` no existe en `actdb`**.
+
+Se informan en consola (`[WARN]`) y en `_etl_report.csv`, en las columnas `filas_sql` (filas cargadas) y `descartadas` (cantidad y motivo). El CSV de cada hoja conserva todas las filas. Ejemplo:
 
 ```text
-Excel → Python → SQL
+[OK]   SQL cargado:   79 filas → vac
+[WARN] VAC: filas descartadas: 20 sin clave primaria; 14 sin codigo_empleado en actdb
 ```
 
-donde cada CSV se convertiría conceptualmente en una tabla:
+## Configuración
+
+1. En Supabase: botón **Connect → Session pooler**.
+   (La conexión directa solo funciona con IPv6; el *Session pooler* funciona en cualquier red.)
+2. Copiar `.env.example` como `.env` y completar los datos:
+
+```powershell
+Copy-Item .env.example .env
+```
 
 ```text
-calendario.csv       → calendario
-datos.csv            → datos
-horarios.csv         → horarios
-puestos.csv          → puestos
+DB_HOST=aws-0-us-east-1.pooler.supabase.com
+DB_PORT=5432
+DB_NAME=postgres
+DB_USER=postgres.<id del proyecto>
+DB_PASSWORD=<contraseña de la base>
+DB_SCHEMA=project_etl
 ```
 
-Además, se podrá agregar una capa de definición de esquema:
+`.env` está en `.gitignore`: **la contraseña nunca debe subirse al repositorio**. Si `DB_PASSWORD` se deja vacío, la ETL la pide por teclado al ejecutar.
 
-```text
-Columna Excel
-      ↓
-Tipo Python
-      ↓
-Tipo SQL
+El esquema es `project_etl`. No se usa `public` porque Supabase publica ese esquema a través de su API, ni `etl`, porque Supabase reserva ese nombre para su herramienta Pipelines y lo muestra como solo lectura.
+
+Para ver las tablas en Supabase: **Table Editor**, seleccionando el esquema `project_etl`.
+
+## Modelos SQLAlchemy
+
+`generate_models.py` lee las tablas del esquema y escribe `etl/models.py`, con una clase por tabla, sus atributos tipados y sus relaciones:
+
+```powershell
+python generate_models.py
 ```
 
-Por ejemplo:
+Ejemplo de uso:
 
-```text
-ID          → INTEGER
-NOMBRE      → VARCHAR
-FECHA       → DATE
-VALOR       → DECIMAL
-CAMPO_VACIO → NULL
+```python
+from sqlalchemy import URL, create_engine, select
+from sqlalchemy.orm import Session
+
+from config import Config
+from etl.models import Vac
+
+engine = create_engine(URL.create(
+    "postgresql+psycopg",
+    username=Config.DB_USER,
+    password=Config.DB_PASSWORD,
+    host=Config.DB_HOST,
+    port=Config.DB_PORT,
+    database=Config.DB_NAME,
+))
+
+with Session(engine) as session:
+    for vac in session.scalars(select(Vac)):
+        print(vac.inicio_salida, vac.dias_a_tomar, vac.actdb.nombre)
 ```
 
-La separación entre extracción, transformación y carga permitirá implementar posteriormente esta etapa sin tener que rehacer la extracción del Excel.
+`etl/models.py` es un archivo generado: no se edita a mano. Si cambia el modelo (`sql_tables.py`), se ejecuta la ETL y luego `generate_models.py`.
 
 ---
 
