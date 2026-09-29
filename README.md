@@ -508,18 +508,26 @@ Solo se procesan las hojas definidas en `Config.SHEETS_TO_PROCESS` (`config/sett
 - `etl/load/sql_writer.py` inserta con **UPSERT**: si la clave primaria ya existe, actualiza la fila; si no, la inserta. Ejecutar la ETL varias veces no duplica datos.
 - Las tablas se cargan en orden de dependencias (`actdb` antes que `vac`), sin importar el orden de las pestañas en el Excel.
 
-## Filas descartadas
+## Empleados que no están en ActDB
 
-Antes de insertar, se descartan las filas que la base rechazaría:
+VAC incluye operarios con labores administrativas que no figuran en la hoja ActDB. Antes de cargar `vac`, la ETL los crea en `actdb` con el código y el nombre que trae VAC (el resto de sus datos queda vacío). Si más adelante se agregan a la hoja ActDB, la carga de `actdb` completa sus datos.
 
-- Filas **sin valor en la clave primaria** (por ejemplo, vacaciones sin `inicio_salida`).
-- Filas de `vac` cuyo **`codigo_empleado` no existe en `actdb`**.
+Se configura en `COMPLETE_REFERENCED` (`etl/load/sql_writer.py`).
+
+## Filas no cargadas
+
+Antes de insertar, se separan las filas que la base rechazaría:
+
+- **Vacaciones pendientes por programar:** filas de VAC sin `inicio_salida`, porque el operario aún no ha reportado cuándo sale. No es un error; se cargarán cuando tengan fecha.
+- Filas **sin valor en la clave primaria** (por ejemplo, en Polivalencia, un registro sin `codigo_empleado`).
+- Filas cuya llave foránea no existe en la tabla referenciada (red de seguridad; con `COMPLETE_REFERENCED` no debería ocurrir en `vac`).
 
 Se informan en consola (`[WARN]`) y en `_etl_report.csv`, en las columnas `filas_sql` (filas cargadas) y `descartadas` (cantidad y motivo). El CSV de cada hoja conserva todas las filas. Ejemplo:
 
 ```text
-[OK]   SQL cargado:   79 filas → vac
-[WARN] VAC: filas descartadas: 20 sin clave primaria; 14 sin codigo_empleado en actdb
+[INFO] VAC: 19 registros creados en actdb.
+[OK]   SQL cargado:   93 filas → vac
+[WARN] VAC: filas no cargadas: 20 pendientes por programar (sin inicio_salida)
 ```
 
 ## Configuración

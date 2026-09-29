@@ -15,7 +15,7 @@ from etl.extract.workbook import open_workbook
 
 from etl.load.csv_writer import write_csv
 from etl.load.report import report_row, write_report
-from etl.load.sql_writer import LOAD_ORDER, write_sql
+from etl.load.sql_writer import FOREIGN_KEYS, LOAD_ORDER, write_sql
 
 from etl.transform.cleaning import clean_dataframe
 from etl.transform.naming import table_name
@@ -275,11 +275,17 @@ def run_etl(
                 # LOAD - PostgreSQL
                 # ===========================================================
 
-                rows_processed, discarded = write_sql(
+                rows_processed, discarded, created_referenced = write_sql(
                     connection,
                     df,
                     table
                 )
+
+                if created_referenced:
+                    print(
+                        f"[INFO] {ws.title}: {created_referenced} "
+                        f"registros creados en {FOREIGN_KEYS[table][1]}."
+                    )
 
                 print(
                     f"[OK]   SQL cargado:   "
@@ -293,7 +299,7 @@ def run_etl(
 
                 if discarded:
                     print(
-                        f"[WARN] {ws.title}: filas descartadas: "
+                        f"[WARN] {ws.title}: filas no cargadas: "
                         f"{discarded_detail}"
                     )
 
