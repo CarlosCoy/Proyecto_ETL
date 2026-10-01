@@ -1,403 +1,1519 @@
-# ---------------------------------------------------------------------------
-# Load: escritura de DataFrames en PostgreSQL mediante psycopg
-# ---------------------------------------------------------------------------
+# ETL Excel → CSV → PostgreSQL
 
-from typing import Any
+ETL desarrollada en Python para extraer información desde un archivo Excel con múltiples hojas, identificar las tablas de interés, limpiar y transformar los datos y cargarlos en PostgreSQL.
 
-import pandas as pd
+La solución genera un archivo CSV por cada tabla procesada y realiza la carga hacia PostgreSQL mediante `psycopg`, utilizando una estrategia de **UPSERT** para actualizar registros existentes e insertar registros nuevos.
 
-from etl.load.sql_tables import SQL_TABLES
+La versión actual de la ETL se encuentra enfocada en cuatro tablas principales:
 
+* `actdb`
+* `vac`
+* `polivalencia`
+* `calendario`
 
-PRIMARY_KEYS = {
-    "actdb": ["codigo_empleado"],
-    "vac": ["codigo_empleado", "inicio_salida"],
-    "polivalencia": ["codigo_empleado"],
-    "calendario": ["fecha"],
+---
+
+# 1. Descripción
+
+El flujo general de la ETL es:
+
+```text
+                    Archivo Excel
+                         │
+                         ▼
+                  ┌─────────────┐
+                  │   Extract   │
+                  └──────┬──────┘
+                         │
+                         ▼
+                  ┌─────────────┐
+                  │   Cleaning  │
+                  └──────┬──────┘
+                         │
+                         ▼
+                  ┌─────────────┐
+                  │ SQL Transform│
+                  └──────┬──────┘
+                         │
+              ┌──────────┴──────────┐
+              ▼                     ▼
+        ┌───────────┐        ┌─────────────┐
+        │    CSV    │        │  PostgreSQL │
+        └───────────┘        └──────┬──────┘
+                                    │
+                                    ▼
+                                 UPSERT
+                                    │
+                         ┌──────────┴──────────┐
+                         ▼                     ▼
+                      INSERT                 UPDATE
+```
+
+La arquitectura separa las responsabilidades de:
+
+```text
+Extract → Transform → Load
+```
+
+Esto permite modificar una etapa sin tener que reconstruir las demás.
+
+---
+
+# 2. Tablas procesadas
+
+La ETL actual procesa únicamente las siguientes hojas:
+
+| Hoja Excel     | Tabla PostgreSQL |
+| -------------- | ---------------- |
+| `ACTDB`        | `actdb`          |
+| `VAC`          | `vac`            |
+| `POLIVALENCIA` | `polivalencia`   |
+| `CALENDARIO`   | `calendario`     |
+
+Las demás hojas del archivo Excel se omiten.
+
+La selección se controla mediante:
+
+```python
+Config.SHEETS_TO_PROCESS
+```
+
+Ejemplo:
+
+```python
+SHEETS_TO_PROCESS = {
+    "VAC",
+    "POLIVALENCIA",
+    "CALENDARIO",
+    "ACTDB",
 }
+```
+
+Durante la ejecución, las hojas no configuradas aparecen como:
+
+```text
+[SKIP] NOMBRE_HOJA: hoja fuera del filtro.
+```
+
+---
+
+# 3. Características principales
+
+La ETL permite:
+
+* Leer archivos `.xlsx` y `.xlsm`.
+* Procesar múltiples hojas.
+* Filtrar las hojas que participan en la carga.
+* Detectar tablas aunque no comiencen en `A1`.
+* Utilizar tablas estructuradas de Excel.
+* Limpiar espacios y valores vacíos.
+* Conservar columnas completamente vacías.
+* Normalizar nombres de columnas.
+* Resolver nombres de columnas duplicados.
+* Transformar datos según cada tabla SQL.
+* Convertir fechas, enteros, decimales y booleanos.
+* Convertir valores como `#N/A` a `NULL`.
+* Generar CSV por tabla.
+* Crear las tablas PostgreSQL si no existen.
+* Utilizar claves primarias y foráneas.
+* Realizar `UPSERT`.
+* Completar automáticamente ciertos registros faltantes en tablas referenciadas.
+* Descartar filas que no pueden cumplir las restricciones de la base de datos.
+* Reportar las filas descartadas y sus motivos.
+* Generar un reporte general de ejecución.
+
+---
+
+# 4. Requisitos
+
+## Python
+
+Se requiere Python 3.10 o superior.
+
+Verificar la instalación:
+
+```powershell
+python --version
+```
+
+Ejemplo:
+
+```text
+Python 3.13.x
+```
+
+Se recomienda utilizar un entorno virtual.
+
+---
+
+## PostgreSQL
+
+La ETL utiliza PostgreSQL como sistema gestor de base de datos.
+
+La conexión se realiza mediante la librería Python:
+
+```text
+psycopg
+```
+
+---
+
+# 5. Instalación
+
+Ubicarse en la carpeta del proyecto:
+
+```powershell
+cd "D:\Maestria\Semestre I\ETL\Proyecto"
+```
+
+Crear el entorno virtual:
+
+```powershell
+python -m venv .venv
+```
+
+Activarlo:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+Si Windows bloquea la ejecución de scripts de PowerShell:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+```
+
+y posteriormente:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+---
+
+# 6. Dependencias
+
+Las principales dependencias utilizadas por la ETL son:
+
+* `pandas` — procesamiento de datos.
+* `numpy` — soporte para tipos y valores numéricos.
+* `openpyxl` — lectura de archivos Excel.
+* `psycopg` — conexión y carga hacia PostgreSQL.
+
+Instalar las dependencias:
+
+```powershell
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+---
+
+# 7. Estructura del proyecto
+
+La estructura actual del proyecto es:
+
+```text
+Proyecto_ETL/
+│
+├── main.py
+├── config.py
+├── requirements.txt
+│
+├── etl/
+│   │
+│   ├── pipeline.py
+│   │
+│   ├── extract/
+│   │   ├── __init__.py
+│   │   ├── workbook.py
+│   │   └── sheet_reader.py
+│   │
+│   ├── transform/
+│   │   ├── __init__.py
+│   │   ├── cleaning.py
+│   │   ├── naming.py
+│   │   └── sql_transform.py
+│   │
+│   └── load/
+│       ├── __init__.py
+│       ├── csv_writer.py
+│       ├── report.py
+│       ├── sql_tables.py
+│       └── sql_writer.py
+│
+└── CSV/
+```
+
+---
+
+# 8. Componentes principales
+
+## `main.py`
+
+Es el punto de entrada de la aplicación.
+
+Recibe los parámetros de ejecución y delega el procesamiento a:
+
+```python
+run_etl(...)
+```
+
+---
+
+## `config.py`
+
+Contiene la configuración general de la ETL:
+
+* Archivo Excel de entrada.
+* Directorio de salida.
+* Hojas a procesar.
+* Parámetros de detección.
+* Configuración de PostgreSQL.
+
+---
+
+## `etl/pipeline.py`
+
+Es el orquestador principal de la ETL.
+
+La función principal es:
+
+```python
+run_etl(...)
+```
+
+Su responsabilidad es coordinar:
+
+```text
+Extract
+   ↓
+Cleaning
+   ↓
+SQL Transform
+   ↓
+CSV
+   ↓
+PostgreSQL
+```
+
+---
+
+# 9. Extract
+
+La extracción se encuentra en:
+
+```text
+etl/extract/
+```
+
+## `workbook.py`
+
+Se encarga de abrir el archivo Excel.
+
+Se soportan:
+
+```text
+.xlsx
+.xlsm
+```
+
+---
+
+## `sheet_reader.py`
+
+Identifica y extrae la tabla principal de cada hoja.
+
+La ETL no asume que la información comienza en `A1`.
+
+Por ejemplo:
+
+```text
+A1: Reporte de horarios
+
+A2: Información adicional
 
 
-# tabla: (columna, tabla referenciada, columna referenciada)
+C5: CODIGO | NOMBRE | FECHA | TURNO
+C6: 001    | Carlos | ...   | 1
+C7: 002    | Juan   | ...   | 2
+```
+
+La ETL intenta identificar el bloque correspondiente a:
+
+```text
+CODIGO | NOMBRE | FECHA | TURNO
+001    | Carlos | ...   | 1
+002    | Juan   | ...   | 2
+```
+
+---
+
+# 10. Tablas estructuradas de Excel
+
+Cuando una hoja contiene una tabla estructurada de Excel, la ETL puede utilizar directamente el rango definido por dicha tabla.
+
+Ejemplo:
+
+```text
+Tabla Excel: Tabla_Horarios
+Rango: C5:H500
+```
+
+Esto permite evitar la detección heurística del rango cuando Excel ya tiene definida explícitamente la estructura de la tabla.
+
+---
+
+# 11. Cleaning
+
+La limpieza genérica se encuentra en:
+
+```text
+etl/transform/cleaning.py
+```
+
+Esta etapa realiza:
+
+* Normalización de nombres de columnas.
+* Eliminación de espacios innecesarios.
+* Conversión de cadenas vacías a valores nulos.
+* Eliminación de filas completamente vacías.
+* Conservación de columnas completamente vacías.
+
+Por ejemplo:
+
+```text
+"   " → NULL
+""    → NULL
+```
+
+Las columnas completamente vacías se conservan porque pueden formar parte de la estructura esperada de la tabla SQL.
+
+---
+
+# 12. Normalización de nombres
+
+La normalización se encuentra en:
+
+```text
+etl/transform/naming.py
+```
+
+Los nombres de las columnas se adaptan a nombres compatibles con el modelo.
+
+Ejemplo:
+
+```text
+Nombre Completo
+```
+
+se transforma en:
+
+```text
+nombre_completo
+```
+
+Otros ejemplos:
+
+```text
+Fecha Nacimiento → fecha_nacimiento
+Código Cliente   → codigo_cliente
+TIPO/ESTADO      → tipo_estado
+```
+
+También se controlan nombres duplicados.
+
+Ejemplo:
+
+```text
+TMC | TMC | MP | MP
+```
+
+se transforma en:
+
+```text
+tmc | tmc_2 | mp | mp_2
+```
+
+---
+
+# 13. Transformación para SQL
+
+La transformación específica se encuentra en:
+
+```text
+etl/transform/sql_transform.py
+```
+
+Cada una de las cuatro tablas tiene su propia transformación:
+
+```text
+actdb
+vac
+polivalencia
+calendario
+```
+
+---
+
+## ACTDB
+
+La columna:
+
+```text
+registro
+```
+
+se transforma en:
+
+```text
+codigo_empleado
+```
+
+Además se convierten los tipos correspondientes para PostgreSQL.
+
+Entre ellos:
+
+* Enteros.
+* Fechas.
+* Teléfono.
+* Valores nulos.
+
+---
+
+## VAC
+
+La columna:
+
+```text
+registro
+```
+
+se transforma en:
+
+```text
+codigo_empleado
+```
+
+Se convierten los campos correspondientes a:
+
+* Enteros.
+* Fechas.
+* Decimales.
+* Valores nulos.
+
+Entre las columnas relevantes se encuentran:
+
+```text
+codigo_empleado
+fecha_ingreso
+inicio_salida
+dias_a_tomar
+fin
+llegada
+mes_de_salida
+fecha
+dias
+```
+
+---
+
+## POLIVALENCIA
+
+Las capacidades de los empleados se representan como valores booleanos.
+
+Valores como:
+
+```text
+X
+SI
+SÍ
+TRUE
+1
+YES
+```
+
+se interpretan como:
+
+```text
+TRUE
+```
+
+Los valores vacíos se interpretan como:
+
+```text
+FALSE
+```
+
+Las columnas especiales de la tabla se mantienen entre comillas en PostgreSQL, permitiendo nombres como:
+
+```text
+"117_OP_1"
+"NOKIA 2/3"
+"96 OP"
+"M. PRIMA"
+```
+
+---
+
+## CALENDARIO
+
+La columna original:
+
+```text
+festivos
+```
+
+se transforma en:
+
+```text
+fecha
+anio
+mes
+dia
+```
+
+Ejemplo:
+
+```text
+2025-01-01
+```
+
+se transforma en:
+
+```text
+fecha = 2025-01-01
+anio  = 2025
+mes   = 1
+dia   = 1
+```
+
+La columna `fecha` es la clave primaria.
+
+---
+
+# 14. Modelo relacional
+
+La ETL utiliza cuatro tablas principales:
+
+```text
+actdb
+  │
+  │ codigo_empleado
+  ▼
+vac
+
+polivalencia
+
+calendario
+```
+
+El modelo es:
+
+| Tabla          | Clave primaria                     | Relación                                    |
+| -------------- | ---------------------------------- | ------------------------------------------- |
+| `actdb`        | `codigo_empleado`                  | —                                           |
+| `vac`          | `codigo_empleado`, `inicio_salida` | `codigo_empleado` → `actdb.codigo_empleado` |
+| `polivalencia` | `codigo_empleado`                  | —                                           |
+| `calendario`   | `fecha`                            | —                                           |
+
+---
+
+# 15. Tabla ACTDB
+
+`actdb` representa los empleados.
+
+Su clave primaria es:
+
+```text
+codigo_empleado
+```
+
+Conceptualmente:
+
+```text
+actdb
+────────────────────────
+codigo_empleado  PK
+nombre
+telefono
+fecha_nacimiento
+categoria
+direccion
+barrio
+ruta
+actualizado
+ciudad
+```
+
+---
+
+# 16. Tabla VAC
+
+`vac` representa los periodos de vacaciones.
+
+Un empleado puede tener múltiples registros de vacaciones.
+
+Por esta razón, la clave primaria es compuesta:
+
+```text
+codigo_empleado + inicio_salida
+```
+
+La relación con `actdb` es:
+
+```text
+vac.codigo_empleado
+        │
+        ▼
+actdb.codigo_empleado
+```
+
+La tabla utiliza una llave foránea:
+
+```sql
+FOREIGN KEY (codigo_empleado)
+    REFERENCES actdb(codigo_empleado)
+```
+
+La clave compuesta permite que un empleado tenga múltiples periodos:
+
+```text
+codigo_empleado | inicio_salida
+----------------+--------------
+337             | 2026-03-20
+337             | 2026-08-18
+337             | 2026-12-01
+```
+
+Si un periodo existente cambia, por ejemplo en su fecha de finalización, el registro se actualiza mediante `UPSERT`.
+
+---
+
+# 17. Tabla POLIVALENCIA
+
+`polivalencia` representa las capacidades y máquinas para las que un empleado está habilitado.
+
+Su clave primaria es:
+
+```text
+codigo_empleado
+```
+
+La tabla contiene:
+
+```text
+codigo_empleado
+planta
+operador
+```
+
+además de las diferentes capacidades representadas mediante columnas booleanas.
+
+---
+
+# 18. Tabla CALENDARIO
+
+`calendario` contiene los días festivos.
+
+Su clave primaria es:
+
+```text
+fecha
+```
+
+La tabla contiene:
+
+```text
+fecha
+anio
+mes
+dia
+```
+
+---
+
+# 19. Definición de tablas SQL
+
+Las sentencias de creación se encuentran en:
+
+```text
+etl/load/sql_tables.py
+```
+
+Las tablas utilizan:
+
+```sql
+CREATE TABLE IF NOT EXISTS
+```
+
+Esto permite ejecutar nuevamente la ETL sin intentar crear una tabla que ya existe.
+
+Las definiciones contienen:
+
+* Tipos de datos.
+* Claves primarias.
+* Claves foráneas.
+* Restricciones del modelo.
+
+---
+
+# 20. Carga a PostgreSQL
+
+La carga se encuentra en:
+
+```text
+etl/load/sql_writer.py
+```
+
+La conexión utiliza:
+
+```text
+Python
+  │
+  ▼
+psycopg
+  │
+  ▼
+PostgreSQL
+```
+
+El proceso de carga realiza:
+
+```text
+Crear tabla si no existe
+        ↓
+Completar referencias necesarias
+        ↓
+Validar filas
+        ↓
+Descartar filas inválidas
+        ↓
+UPSERT
+        ↓
+COMMIT
+```
+
+---
+
+# 21. UPSERT
+
+La carga utiliza `INSERT ... ON CONFLICT`.
+
+El comportamiento es:
+
+```text
+                     Registro
+                        │
+                        ▼
+                ¿Existe la clave?
+                   /          \
+                 NO            SÍ
+                 │             │
+                 ▼             ▼
+              INSERT        UPDATE
+```
+
+Esto permite ejecutar la ETL varias veces sin duplicar registros cuya clave ya existe.
+
+---
+
+## ACTDB
+
+Clave:
+
+```text
+codigo_empleado
+```
+
+Se utiliza:
+
+```sql
+ON CONFLICT ("codigo_empleado")
+DO UPDATE SET ...
+```
+
+---
+
+## POLIVALENCIA
+
+Clave:
+
+```text
+codigo_empleado
+```
+
+Se utiliza:
+
+```sql
+ON CONFLICT ("codigo_empleado")
+DO UPDATE SET ...
+```
+
+---
+
+## CALENDARIO
+
+Clave:
+
+```text
+fecha
+```
+
+Se utiliza:
+
+```sql
+ON CONFLICT ("fecha")
+DO UPDATE SET ...
+```
+
+---
+
+## VAC
+
+Clave:
+
+```text
+codigo_empleado + inicio_salida
+```
+
+Se utiliza:
+
+```sql
+ON CONFLICT ("codigo_empleado", "inicio_salida")
+DO UPDATE SET ...
+```
+
+Por ejemplo, si un empleado tiene:
+
+```text
+codigo_empleado = 7102
+inicio_salida   = 2026-03-20
+fin             = 2026-04-14
+```
+
+y posteriormente el Excel cambia:
+
+```text
+fin = 2026-04-20
+```
+
+el registro existente se actualiza.
+
+---
+
+# 22. Manejo de llaves foráneas
+
+La relación definida actualmente es:
+
+```text
+vac.codigo_empleado
+        │
+        ▼
+actdb.codigo_empleado
+```
+
+El `sql_writer.py` valida esta relación antes de realizar la carga.
+
+La configuración se encuentra en:
+
+```python
 FOREIGN_KEYS = {
     "vac": ("codigo_empleado", "actdb", "codigo_empleado"),
 }
+```
 
-# Registros que se crean en la tabla referenciada cuando faltan, con las
-# columnas indicadas (el resto queda NULL): en VAC hay operarios con labores
-# administrativas que no figuran en ActDB, pero son empleados válidos.
+---
+
+# 23. Completar empleados faltantes
+
+Existe un caso particular en `VAC`.
+
+Puede haber operarios con labores administrativas que aparecen en `VAC`, pero que no figuran inicialmente en `ACTDB`.
+
+Para evitar que la llave foránea impida la carga, la ETL puede crear previamente el empleado faltante en `actdb`.
+
+La configuración es:
+
+```python
 COMPLETE_REFERENCED = {
     "vac": ["codigo_empleado", "nombre"],
 }
+```
 
-# Motivo con el que se reporta una fila sin clave primaria cuando eso tiene
-# un significado propio (por defecto: "sin clave primaria").
-MISSING_KEY_REASONS = {
-    "vac": "pendientes por programar (sin inicio_salida)",
-}
+Cuando se encuentra un empleado de `VAC` que no existe en `ACTDB`, se crea con:
 
-# Orden de carga: una tabla referenciada se carga antes que quien la usa.
+```text
+codigo_empleado
+nombre
+```
+
+Los demás atributos de `ACTDB` quedan como `NULL`.
+
+Si posteriormente el empleado aparece en `ACTDB`, la carga normal de `actdb` actualiza y completa su información.
+
+Los registros creados de esta forma no reemplazan información existente en `ACTDB`, ya que se utiliza:
+
+```sql
+ON CONFLICT DO NOTHING
+```
+
+---
+
+# 24. Filas descartadas
+
+Antes de realizar el `UPSERT`, la ETL identifica filas que no pueden ser cargadas correctamente.
+
+Se contemplan principalmente:
+
+### Filas sin clave primaria
+
+Por ejemplo, en `VAC`:
+
+```text
+inicio_salida = NULL
+```
+
+Estas filas no pueden formar la clave:
+
+```text
+codigo_empleado + inicio_salida
+```
+
+En este caso se reportan como:
+
+```text
+pendientes por programar (sin inicio_salida)
+```
+
+Esto no se considera necesariamente un error del proceso.
+
+La información se conserva en el CSV, pero la fila no se inserta en PostgreSQL.
+
+---
+
+### Filas sin llave foránea
+
+Si una fila de `VAC` tiene:
+
+```text
+codigo_empleado
+```
+
+pero dicho empleado no existe en `ACTDB` y no puede ser completado mediante la lógica correspondiente, la fila se descarta para evitar una violación de la llave foránea.
+
+El motivo se reporta como:
+
+```text
+sin codigo_empleado en actdb
+```
+
+---
+
+# 25. Reporte de filas descartadas
+
+Los descartes se informan tanto en consola como en el reporte de ejecución.
+
+Ejemplo:
+
+```text
+[WARN] VAC: filas no cargadas:
+20 pendientes por programar (sin inicio_salida)
+```
+
+El reporte permite diferenciar entre:
+
+```text
+filas extraídas
+filas cargadas
+filas descartadas
+motivo del descarte
+```
+
+El CSV de la hoja conserva las filas originales procesadas, aunque algunas no sean cargadas a PostgreSQL.
+
+---
+
+# 26. Orden de carga
+
+Las tablas deben cargarse respetando sus dependencias.
+
+Actualmente:
+
+```text
+ACTDB
+  ↓
+VAC
+```
+
+porque `VAC` tiene una llave foránea hacia `ACTDB`.
+
+El `sql_writer.py` mantiene una configuración de orden:
+
+```python
 LOAD_ORDER = list(SQL_TABLES)
+```
 
+El objetivo es que una tabla referenciada se encuentre disponible antes de cargar la tabla que depende de ella.
 
-def quote_identifier(identifier: str) -> str:
-    """
-    Escapa un identificador SQL de PostgreSQL.
+---
 
-    Permite utilizar nombres de columnas como:
+# 27. Conversión de valores NULL
 
-        "117_OP_1"
-        "NOKIA 2/3"
-        "96 OP"
-        "M. PRIMA"
-    """
+Los valores vacíos se convierten a:
 
-    escaped = identifier.replace('"', '""')
+```python
+None
+```
 
-    return f'"{escaped}"'
+antes de enviarse a PostgreSQL.
 
+También se reconocen valores como:
 
-def python_value(value: Any) -> Any:
-    """
-    Convierte valores de pandas/numpy a tipos Python compatibles
-    con psycopg.
+```text
+#N/A
+#NA
+N/A
+NA
+NULL
+NONE
+```
 
-    Los valores vacíos se convierten en None para representar
-    SQL NULL.
-    """
+como valores nulos durante la transformación SQL.
 
-    if value is None:
-        return None
+De esta manera, PostgreSQL recibe:
 
-    try:
-        if pd.isna(value):
-            return None
-    except (TypeError, ValueError):
-        pass
+```sql
+NULL
+```
 
-    if hasattr(value, "item"):
-        try:
-            value = value.item()
-        except (ValueError, TypeError):
-            pass
+en lugar de cadenas de texto que representen valores nulos.
 
-    if hasattr(value, "to_pydatetime"):
-        try:
-            value = value.to_pydatetime()
-        except (ValueError, TypeError):
-            pass
+---
 
-    return value
+# 28. Identificadores SQL especiales
 
+Algunas columnas de `POLIVALENCIA` contienen espacios, `/`, puntos u otros caracteres.
 
-def create_table(
-    connection,
-    table_name: str,
-) -> None:
-    """
-    Crea la tabla utilizando la sentencia definida en sql_tables.py.
-    """
+Ejemplos:
 
-    if table_name not in SQL_TABLES:
-        raise ValueError(
-            f"No existe definición SQL para la tabla: {table_name}"
-        )
+```text
+"117_OP_1"
+"NOKIA 2/3"
+"96 OP"
+"M. PRIMA"
+```
 
-    sql = SQL_TABLES[table_name]
+`sql_writer.py` utiliza `quote_identifier()` para escapar correctamente estos nombres.
 
-    cursor = connection.cursor()
+Esto permite generar sentencias SQL válidas sin modificar los nombres definidos por el modelo.
 
-    try:
-        cursor.execute(sql)
-    finally:
-        cursor.close()
+---
 
+# 29. Archivos CSV generados
 
-def insert_dataframe(
-    connection,
-    df: pd.DataFrame,
-    table_name: str,
-) -> int:
-    """
-    Inserta o actualiza los registros del DataFrame.
+Por cada tabla procesada se genera un CSV:
 
-    Si la clave primaria ya existe, se actualizan los valores.
-    Si no existe, se inserta un nuevo registro.
+```text
+CSV/
+│
+├── actdb.csv
+├── vac.csv
+├── polivalencia.csv
+├── calendario.csv
+└── _etl_report.csv
+```
 
-    Retorna el número de filas procesadas.
-    """
+El CSV constituye una salida intermedia útil para:
 
-    if df.empty:
-        return 0
+* Revisar los datos transformados.
+* Auditar la extracción.
+* Verificar columnas y tipos.
+* Analizar filas que posteriormente no fueron cargadas a PostgreSQL.
 
-    if table_name not in SQL_TABLES:
-        raise ValueError(
-            f"No existe definición SQL para la tabla: {table_name}"
-        )
+---
 
-    if table_name not in PRIMARY_KEYS:
-        raise ValueError(
-            f"No existe definición de clave primaria para: {table_name}"
-        )
+# 30. Reporte de ejecución
 
-    primary_keys = PRIMARY_KEYS[table_name]
+La ETL genera:
 
-    missing_keys = [
-        key
-        for key in primary_keys
-        if key not in df.columns
-    ]
+```text
+_etl_report.csv
+```
 
-    if missing_keys:
-        raise ValueError(
-            f"La tabla '{table_name}' requiere las columnas "
-            f"de clave primaria: {', '.join(missing_keys)}"
-        )
+El reporte contiene información sobre cada hoja procesada.
 
-    columns = list(df.columns)
+Entre los campos se encuentran:
 
-    quoted_columns = ", ".join(
-        quote_identifier(column)
-        for column in columns
-    )
+| Campo      | Descripción                             |
+| ---------- | --------------------------------------- |
+| `hoja`     | Nombre de la hoja Excel                 |
+| `tabla`    | Tabla destino                           |
+| `fuente`   | Método utilizado para detectar la tabla |
+| `rango`    | Rango utilizado                         |
+| `filas`    | Filas procesadas                        |
+| `columnas` | Columnas procesadas                     |
+| `estado`   | Resultado del procesamiento             |
+| `archivo`  | CSV generado                            |
 
-    placeholders = ", ".join(
-        "%s"
-        for _ in columns
-    )
+El reporte permite revisar rápidamente la ejecución completa.
 
-    update_columns = [
-        column
-        for column in columns
-        if column not in primary_keys
-    ]
+---
 
-    if update_columns:
+# 31. Ejecución
 
-        update_clause = ", ".join(
-            f"{quote_identifier(column)} = "
-            f"EXCLUDED.{quote_identifier(column)}"
-            for column in update_columns
-        )
+La ruta del archivo Excel es paramétrica.
 
-        conflict_columns = ", ".join(
-            quote_identifier(key)
-            for key in primary_keys
-        )
+Ejemplo:
 
-        conflict_clause = (
-            f"ON CONFLICT ({conflict_columns}) "
-            f"DO UPDATE SET {update_clause}"
-        )
+```powershell
+python main.py `
+    --input "D:\Maestria\Semestre I\ETL\Proyecto\Datos\Copia de S38_HORARIO_PROD_P1_2026 .xlsm" `
+    --output "D:\Maestria\Semestre I\ETL\Proyecto\CSV"
+```
 
-    else:
+También puede ejecutarse en una sola línea:
 
-        conflict_columns = ", ".join(
-            quote_identifier(key)
-            for key in primary_keys
-        )
+```powershell
+python main.py --input "D:\Datos\archivo.xlsm" --output "D:\Datos\CSV"
+```
 
-        conflict_clause = (
-            f"ON CONFLICT ({conflict_columns}) "
-            f"DO NOTHING"
-        )
+---
 
-    sql = (
-        f"INSERT INTO {quote_identifier(table_name)} "
-        f"({quoted_columns}) "
-        f"VALUES ({placeholders}) "
-        f"{conflict_clause}"
-    )
+# 32. Parámetros
 
-    cursor = connection.cursor()
+## `--input`
 
-    rows_processed = 0
+Ruta del archivo Excel de entrada.
 
-    try:
+Si no se especifica, se utiliza:
 
-        for row in df.itertuples(
-            index=False,
-            name=None,
-        ):
+```python
+Config.INPUT_FILE
+```
 
-            values = tuple(
-                python_value(value)
-                for value in row
-            )
+Ejemplo:
 
-            cursor.execute(
-                sql,
-                values,
-            )
+```powershell
+--input "D:\Datos\archivo.xlsx"
+```
 
-            rows_processed += 1
+Soporta:
 
-    finally:
+```text
+.xlsx
+.xlsm
+```
 
-        cursor.close()
+---
 
-    return rows_processed
+## `--output`
 
+Directorio donde se generan los CSV y el reporte.
 
-def discard_invalid_rows(
-    connection,
-    df: pd.DataFrame,
-    table_name: str,
-) -> tuple[pd.DataFrame, dict[str, int]]:
-    """
-    Separa las filas que la base rechazaría por sus llaves.
+Si no se especifica, se utiliza:
 
-    - Sin valor en alguna columna de la clave primaria.
-    - Con una llave foránea que no existe en la tabla referenciada.
+```python
+Config.OUTPUT_DIR
+```
 
-    Retorna (filas válidas, {motivo: cantidad descartada}).
-    """
+Ejemplo:
 
-    discarded = {}
+```powershell
+--output "D:\Datos\CSV"
+```
 
-    # Si falta una columna de la clave, insert_dataframe() lo reporta.
-    primary_keys = [
-        key
-        for key in PRIMARY_KEYS.get(table_name, [])
-        if key in df.columns
-    ]
+---
 
-    missing_pk = df[primary_keys].isna().any(axis=1)
+## `--keep-formulas`
 
-    if missing_pk.any():
-        reason = MISSING_KEY_REASONS.get(table_name, "sin clave primaria")
-        discarded[reason] = int(missing_pk.sum())
-        df = df[~missing_pk]
+Permite conservar las fórmulas de Excel como fórmulas en lugar de utilizar sus valores calculados.
 
-    if table_name in FOREIGN_KEYS:
+Ejemplo:
 
-        column, ref_table, ref_column = FOREIGN_KEYS[table_name]
+```powershell
+python main.py `
+    --input "D:\Datos\archivo.xlsm" `
+    --output "D:\Datos\CSV" `
+    --keep-formulas
+```
 
-        cursor = connection.cursor()
+Para la carga SQL normalmente se utilizan los valores calculados.
 
-        try:
-            cursor.execute(
-                f"SELECT {quote_identifier(ref_column)} "
-                f"FROM {quote_identifier(ref_table)}"
-            )
-            existing = {row[0] for row in cursor.fetchall()}
-        finally:
-            cursor.close()
+---
 
-        missing_fk = (
-            df[column].notna()
-            & ~df[column].isin(existing)
-        )
+# 33. Configuración de PostgreSQL
 
-        if missing_fk.any():
-            discarded[f"sin {column} en {ref_table}"] = int(missing_fk.sum())
-            df = df[~missing_fk]
+La configuración de conexión se encuentra en:
 
-    return df, discarded
+```text
+config.py
+```
 
+Los parámetros principales son:
 
-def complete_referenced_rows(
-    connection,
-    df: pd.DataFrame,
-    table_name: str,
-) -> int:
-    """
-    Crea en la tabla referenciada los registros que faltan (COMPLETE_REFERENCED).
+```python
+DB_HOST
+DB_PORT
+DB_NAME
+DB_USER
+DB_PASSWORD
+```
 
-    Si el registro ya existe, no se modifica: los datos completos de la
-    tabla referenciada tienen prioridad.
+La contraseña no debe almacenarse directamente en el repositorio.
 
-    Retorna la cantidad de registros creados.
-    """
+La conexión debe configurarse de acuerdo con la instancia PostgreSQL utilizada para el proyecto.
 
-    if table_name not in COMPLETE_REFERENCED:
-        return 0
+---
 
-    column, ref_table, ref_column = FOREIGN_KEYS[table_name]
+# 34. Flujo completo de ejecución
 
-    columns = COMPLETE_REFERENCED[table_name]
+El pipeline completo funciona de la siguiente manera:
 
-    # Un registro por llave; la columna propia pasa a llamarse como la
-    # referenciada.
-    rows = (
-        df[columns]
-        .dropna(subset=[column])
-        .drop_duplicates(subset=[column])
-        .rename(columns={column: ref_column})
-    )
+```text
+                         Excel
+                           │
+                           ▼
+                    ┌────────────┐
+                    │   Extract  │
+                    └─────┬──────┘
+                          │
+                          ▼
+                    ┌────────────┐
+                    │  Cleaning  │
+                    └─────┬──────┘
+                          │
+                          ▼
+                  ┌────────────────┐
+                  │ SQL Transform  │
+                  └───────┬────────┘
+                          │
+                    ┌─────┴─────┐
+                    │           │
+                    ▼           ▼
+                  CSV       PostgreSQL
+                              │
+                              ▼
+                       Validar llaves
+                              │
+                              ▼
+                   Completar referencias
+                              │
+                              ▼
+                        Descartar
+                         inválidas
+                              │
+                              ▼
+                           UPSERT
+                              │
+                              ▼
+                           COMMIT
+                              │
+                              ▼
+                           Reporte
+```
 
-    quoted_columns = ", ".join(
-        quote_identifier(name)
-        for name in rows.columns
-    )
+---
 
-    placeholders = ", ".join(
-        "%s"
-        for _ in rows.columns
-    )
+# 35. Ejemplo de ejecución
 
-    sql = (
-        f"INSERT INTO {quote_identifier(ref_table)} "
-        f"({quoted_columns}) "
-        f"VALUES ({placeholders}) "
-        f"ON CONFLICT ({quote_identifier(ref_column)}) DO NOTHING"
-    )
+Desde PowerShell:
 
-    cursor = connection.cursor()
+```powershell
+cd "D:\Maestria\Semestre I\ETL\Proyecto"
 
-    created = 0
+.\.venv\Scripts\Activate.ps1
 
-    try:
+python main.py `
+    --input "D:\Maestria\Semestre I\ETL\Proyecto\Datos\Copia de S38_HORARIO_PROD_P1_2026 .xlsm" `
+    --output "D:\Maestria\Semestre I\ETL\Proyecto\CSV"
+```
 
-        for row in rows.itertuples(index=False, name=None):
+Durante la ejecución se muestran mensajes similares a:
 
-            cursor.execute(
-                sql,
-                tuple(python_value(value) for value in row),
-            )
+```text
+Excel origen: D:\...\archivo.xlsm
+Salida:       D:\...\CSV
+Hojas Excel:  12
+Hojas filtro: ACTDB, CALENDARIO, POLIVALENCIA, VAC
+```
 
-            created += cursor.rowcount
+Para una carga exitosa:
 
-    finally:
-        cursor.close()
+```text
+[OK]   CSV generado: actdb.csv
+[OK]   SQL cargado:   500 filas → actdb
 
-    return created
+[OK]   CSV generado: vac.csv
+[OK]   SQL cargado:   93 filas → vac
+```
 
+Para filas no cargadas:
 
-def write_sql(
-    connection,
-    df: pd.DataFrame,
-    table_name: str,
-) -> tuple[int, dict[str, int], int]:
-    """
-    Crea la tabla e inserta o actualiza el DataFrame.
+```text
+[WARN] VAC: filas no cargadas:
+20 pendientes por programar (sin inicio_salida)
+```
 
-    Retorna (filas procesadas, {motivo: filas descartadas},
-    registros creados en la tabla referenciada).
-    """
+---
 
-    create_table(
-        connection,
-        table_name,
-    )
+# 36. Reejecución de la ETL
 
-    created_referenced = complete_referenced_rows(
-        connection,
-        df,
-        table_name,
-    )
+La ETL está diseñada para ejecutarse varias veces sobre los mismos datos.
 
-    df, discarded = discard_invalid_rows(
-        connection,
-        df,
-        table_name,
-    )
+En la primera ejecución:
 
-    rows_processed = insert_dataframe(
-        connection,
-        df,
-        table_name,
-    )
+```text
+Tabla no existe
+       ↓
+CREATE TABLE
+       ↓
+INSERT
+```
 
-    connection.commit()
+En ejecuciones posteriores:
 
-    return rows_processed, discarded, created_referenced
+```text
+Tabla ya existe
+       ↓
+CREATE TABLE IF NOT EXISTS
+       ↓
+UPSERT
+```
+
+Para un registro cuya clave ya existe:
+
+```text
+UPDATE
+```
+
+Para un registro nuevo:
+
+```text
+INSERT
+```
+
+Esto evita duplicar registros durante ejecuciones repetidas.
+
+---
+
+# 37. Arquitectura
+
+La separación de responsabilidades es:
+
+```text
+EXTRACT
+│
+├── workbook.py
+└── sheet_reader.py
+
+TRANSFORM
+│
+├── cleaning.py
+├── naming.py
+└── sql_transform.py
+
+LOAD
+│
+├── csv_writer.py
+├── sql_tables.py
+├── sql_writer.py
+└── report.py
+```
+
+El `pipeline.py` coordina las diferentes etapas.
+
+Esta separación permite evolucionar cada componente de forma independiente.
+
+---
+
+# 38. Consideraciones
+
+La detección automática de tablas es heurística cuando una hoja no utiliza una tabla estructurada de Excel.
+
+Si una hoja contiene múltiples bloques de información independientes, puede ser necesario ajustar la lógica de extracción para identificar correctamente la tabla principal.
+
+Se recomienda:
+
+1. Utilizar tablas estructuradas de Excel cuando sea posible.
+2. Utilizar la detección automática como mecanismo de respaldo.
+3. Mantener la configuración de hojas limitada a las tablas requeridas.
+4. Revisar los CSV generados después de cada ejecución.
+5. Revisar `_etl_report.csv`.
+6. Verificar especialmente las filas descartadas antes de considerar una carga como completamente exitosa.
+
+---
+
+# 39. Modelo actual
+
+La versión actual de la ETL se encuentra deliberadamente enfocada en cuatro tablas:
+
+```text
+┌─────────────────────┐
+│        ACTDB        │
+│ codigo_empleado PK  │
+└──────────┬──────────┘
+           │
+           │ FK
+           ▼
+┌──────────────────────────────┐
+│             VAC              │
+│ codigo_empleado              │
+│ inicio_salida                │
+│ PK compuesta                 │
+└──────────────────────────────┘
+
+
+┌──────────────────────────────┐
+│        POLIVALENCIA          │
+│ codigo_empleado PK           │
+│ capacidades BOOLEAN          │
+└──────────────────────────────┘
+
+
+┌──────────────────────────────┐
+│          CALENDARIO          │
+│ fecha PK                     │
+│ anio                         │
+│ mes                          │
+│ dia                          │
+└──────────────────────────────┘
+```
+
+Estas cuatro tablas constituyen actualmente el alcance principal de la carga SQL.
+
+---
+
+# 40. Resultado final
+
+La ETL permite transformar el archivo Excel de origen en un modelo relacional PostgreSQL mediante el siguiente proceso:
+
+```text
+Excel
+  │
+  ▼
+Extracción de tablas
+  │
+  ▼
+Limpieza
+  │
+  ▼
+Transformación
+  │
+  ├──────────────► CSV
+  │
+  ▼
+Validación de llaves
+  │
+  ▼
+Carga PostgreSQL
+  │
+  ▼
+UPSERT
+  │
+  ▼
+Reporte de ejecución
+```
+
+El resultado es una carga reproducible que puede ejecutarse nuevamente para **insertar registros nuevos y actualizar registros existentes**, manteniendo las relaciones definidas entre las cuatro tablas principales.
