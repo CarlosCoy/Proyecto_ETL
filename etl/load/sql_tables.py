@@ -18,7 +18,7 @@ SQL_TABLES = {
             direccion VARCHAR(200),
             barrio VARCHAR(100),
             ruta INTEGER,
-            actualizado VARCHAR(10),
+            actualizado VARCHAR(20),
             ciudad VARCHAR(100)
         );
     """,

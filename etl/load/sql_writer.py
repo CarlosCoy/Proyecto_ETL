@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# Load: escritura de DataFrames en PostgreSQL mediante JDBC
+# Load: escritura de DataFrames en PostgreSQL mediante psycopg
 # ---------------------------------------------------------------------------
 
 from typing import Any
@@ -15,6 +15,28 @@ PRIMARY_KEYS = {
     "polivalencia": ["codigo_empleado"],
     "calendario": ["fecha"],
 }
+
+
+# tabla: (columna, tabla referenciada, columna referenciada)
+FOREIGN_KEYS = {
+    "vac": ("codigo_empleado", "actdb", "codigo_empleado"),
+}
+
+# Registros que se crean en la tabla referenciada cuando faltan, con las
+# columnas indicadas (el resto queda NULL): en VAC hay operarios con labores
+# administrativas que no figuran en ActDB, pero son empleados válidos.
+COMPLETE_REFERENCED = {
+    "vac": ["codigo_empleado", "nombre"],
+}
+
+# Motivo con el que se reporta una fila sin clave primaria cuando eso tiene
+# un significado propio (por defecto: "sin clave primaria").
+MISSING_KEY_REASONS = {
+    "vac": "pendientes por programar (sin inicio_salida)",
+}
+
+# Orden de carga: una tabla referenciada se carga antes que quien la usa.
+LOAD_ORDER = list(SQL_TABLES)
 
 
 def quote_identifier(identifier: str) -> str:
@@ -37,7 +59,7 @@ def quote_identifier(identifier: str) -> str:
 def python_value(value: Any) -> Any:
     """
     Convierte valores de pandas/numpy a tipos Python compatibles
-    con JDBC/JayDeBeApi.
+    con psycopg.
 
     Los valores vacíos se convierten en None para representar
     SQL NULL.
@@ -139,7 +161,7 @@ def insert_dataframe(
     )
 
     placeholders = ", ".join(
-        "?"
+        "%s"
         for _ in columns
     )
 
@@ -216,19 +238,157 @@ def insert_dataframe(
     return rows_processed
 
 
-def write_sql(
+def discard_invalid_rows(
+    connection,
+    df: pd.DataFrame,
+    table_name: str,
+) -> tuple[pd.DataFrame, dict[str, int]]:
+    """
+    Separa las filas que la base rechazaría por sus llaves.
+
+    - Sin valor en alguna columna de la clave primaria.
+    - Con una llave foránea que no existe en la tabla referenciada.
+
+    Retorna (filas válidas, {motivo: cantidad descartada}).
+    """
+
+    discarded = {}
+
+    # Si falta una columna de la clave, insert_dataframe() lo reporta.
+    primary_keys = [
+        key
+        for key in PRIMARY_KEYS.get(table_name, [])
+        if key in df.columns
+    ]
+
+    missing_pk = df[primary_keys].isna().any(axis=1)
+
+    if missing_pk.any():
+        reason = MISSING_KEY_REASONS.get(table_name, "sin clave primaria")
+        discarded[reason] = int(missing_pk.sum())
+        df = df[~missing_pk]
+
+    if table_name in FOREIGN_KEYS:
+
+        column, ref_table, ref_column = FOREIGN_KEYS[table_name]
+
+        cursor = connection.cursor()
+
+        try:
+            cursor.execute(
+                f"SELECT {quote_identifier(ref_column)} "
+                f"FROM {quote_identifier(ref_table)}"
+            )
+            existing = {row[0] for row in cursor.fetchall()}
+        finally:
+            cursor.close()
+
+        missing_fk = (
+            df[column].notna()
+            & ~df[column].isin(existing)
+        )
+
+        if missing_fk.any():
+            discarded[f"sin {column} en {ref_table}"] = int(missing_fk.sum())
+            df = df[~missing_fk]
+
+    return df, discarded
+
+
+def complete_referenced_rows(
     connection,
     df: pd.DataFrame,
     table_name: str,
 ) -> int:
     """
+    Crea en la tabla referenciada los registros que faltan (COMPLETE_REFERENCED).
+
+    Si el registro ya existe, no se modifica: los datos completos de la
+    tabla referenciada tienen prioridad.
+
+    Retorna la cantidad de registros creados.
+    """
+
+    if table_name not in COMPLETE_REFERENCED:
+        return 0
+
+    column, ref_table, ref_column = FOREIGN_KEYS[table_name]
+
+    columns = COMPLETE_REFERENCED[table_name]
+
+    # Un registro por llave; la columna propia pasa a llamarse como la
+    # referenciada.
+    rows = (
+        df[columns]
+        .dropna(subset=[column])
+        .drop_duplicates(subset=[column])
+        .rename(columns={column: ref_column})
+    )
+
+    quoted_columns = ", ".join(
+        quote_identifier(name)
+        for name in rows.columns
+    )
+
+    placeholders = ", ".join(
+        "%s"
+        for _ in rows.columns
+    )
+
+    sql = (
+        f"INSERT INTO {quote_identifier(ref_table)} "
+        f"({quoted_columns}) "
+        f"VALUES ({placeholders}) "
+        f"ON CONFLICT ({quote_identifier(ref_column)}) DO NOTHING"
+    )
+
+    cursor = connection.cursor()
+
+    created = 0
+
+    try:
+
+        for row in rows.itertuples(index=False, name=None):
+
+            cursor.execute(
+                sql,
+                tuple(python_value(value) for value in row),
+            )
+
+            created += cursor.rowcount
+
+    finally:
+        cursor.close()
+
+    return created
+
+
+def write_sql(
+    connection,
+    df: pd.DataFrame,
+    table_name: str,
+) -> tuple[int, dict[str, int], int]:
+    """
     Crea la tabla e inserta o actualiza el DataFrame.
 
-    Retorna el número de filas procesadas.
+    Retorna (filas procesadas, {motivo: filas descartadas},
+    registros creados en la tabla referenciada).
     """
 
     create_table(
         connection,
+        table_name,
+    )
+
+    created_referenced = complete_referenced_rows(
+        connection,
+        df,
+        table_name,
+    )
+
+    df, discarded = discard_invalid_rows(
+        connection,
+        df,
         table_name,
     )
 
@@ -240,4 +400,4 @@ def write_sql(
 
     connection.commit()
 
-    return rows_processed
+    return rows_processed, discarded, created_referenced

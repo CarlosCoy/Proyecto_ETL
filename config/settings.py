@@ -2,7 +2,14 @@
 # Configuración de la ETL
 # ---------------------------------------------------------------------------
 
-from pathlib import Path
+import os
+
+from dotenv import load_dotenv
+
+
+# Los datos de conexión se leen de .env (no se versiona), nunca del código.
+load_dotenv()
+
 
 class Config:
 
@@ -49,21 +56,14 @@ class Config:
     # Base de datos
     # -----------------------------------------------------------------------
 
-    DB_HOST = "TU_HOST"
-    DB_PORT = 5432
-    DB_NAME = "TU_BASE_DATOS"
-    DB_USER = "TU_USUARIO"
+    DB_HOST = os.getenv("DB_HOST", "TU_HOST")
+    DB_PORT = int(os.getenv("DB_PORT", "5432"))
+    DB_NAME = os.getenv("DB_NAME", "TU_BASE_DATOS")
+    DB_USER = os.getenv("DB_USER", "TU_USUARIO")
 
-    DB_DRIVER = "org.postgresql.Driver"
+    # Vacío = se pide por teclado al ejecutar.
+    DB_PASSWORD = os.getenv("DB_PASSWORD", "")
 
-    DB_URL = (
-        f"jdbc:postgresql://"
-        f"{DB_HOST}:{DB_PORT}/"
-        f"{DB_NAME}"
-    )
+    # Esquema propio: Supabase expone "public" por su API y reserva "etl".
+    DB_SCHEMA = os.getenv("DB_SCHEMA", "project_etl")
 
-    DB_JAR = (
-        Path(__file__).resolve().parent
-        / "lib"
-        / "postgresql-42.7.13.jar"
-    )

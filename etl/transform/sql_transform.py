@@ -241,6 +241,28 @@ def transform_actdb(df: pd.DataFrame) -> pd.DataFrame:
 # VAC
 # ---------------------------------------------------------------------------
 
+# Columnas de la tabla vac (ver sql_tables.py).
+VAC_COLUMNS = [
+    "codigo_empleado",
+    "nombre",
+    "maquina",
+    "mes",
+    "fecha_ingreso",
+    "turno_actual",
+    "vacaciones_dic",
+    "tipo",
+    "inicio_salida",
+    "dias_a_tomar",
+    "fin",
+    "llegada",
+    "observaciones",
+    "mes_de_salida",
+    "estado",
+    "fecha",
+    "dias",
+]
+
+
 def transform_vac(df: pd.DataFrame) -> pd.DataFrame:
     """
     Prepara VAC para SQL.
@@ -308,6 +330,18 @@ def transform_vac(df: pd.DataFrame) -> pd.DataFrame:
         df["dias"] = to_decimal(
             df["dias"]
         )
+
+    # -----------------------------------------------------------------------
+    # Columnas del modelo
+    # -----------------------------------------------------------------------
+
+    # La hoja trae además columnas sin encabezado y un calendario visual
+    # (una columna vacía por día) que no forman parte de la tabla vac.
+    df = df[[
+        column
+        for column in VAC_COLUMNS
+        if column in df.columns
+    ]]
 
     # -----------------------------------------------------------------------
     # Nulls
